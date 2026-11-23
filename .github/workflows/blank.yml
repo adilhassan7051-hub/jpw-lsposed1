@@ -19,20 +19,15 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Arrange Android Project Structure
         run: |
           mkdir -p app/src/main/java/com/jpwreach/lsposed
           mkdir -p app/src/main/assets
           mkdir -p app/src/main/res/values
           
-          # Move Kotlin/Java source files
           find . -maxdepth 1 -name "*.kt" -exec cp {} app/src/main/java/com/jpwreach/lsposed/ \;
           find . -maxdepth 1 -name "*.java" -exec cp {} app/src/main/java/com/jpwreach/lsposed/ \;
           
-          # Copy Manifest and resources if present in root
           [ -f AndroidManifest.xml ] && cp AndroidManifest.xml app/src/main/
           [ -f xposed_init ] && cp xposed_init app/src/main/assets/
           [ -f strings.xml ] && cp strings.xml app/src/main/res/values/
