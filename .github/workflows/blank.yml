@@ -35,20 +35,19 @@ jobs:
           cp strings.xml app/src/main/res/values/
           cp arrays.xml app/src/main/res/values/
           
-          # Pick the app-level build.gradle.kts (the one containing 'android {')
+          # Separate root-level and app-level build.gradle.kts
+          mkdir -p tmp_gradle
           for f in build.gradle*.kts; do
             if grep -q "android {" "$f"; then
-              cp "$f" app/build.gradle.kts
+              cp "$f" tmp_gradle/app_build.gradle.kts
+            elif grep -q "apply false" "$f"; then
+              cp "$f" tmp_gradle/root_build.gradle.kts
             fi
           done
           
-          # Fallback if none matched 'android {'
-          if [ ! -f app/build.gradle.kts ]; then
-            cp build.gradle.kts app/build.gradle.kts
-          fi
-          
-          # Remove duplicate gradle scripts from root so root only acts as parent project
           rm -f build.gradle*.kts
+          [ -f tmp_gradle/app_build.gradle.kts ] && cp tmp_gradle/app_build.gradle.kts app/build.gradle.kts
+          [ -f tmp_gradle/root_build.gradle.kts ] && cp tmp_gradle/root_build.gradle.kts build.gradle.kts
 
       - name: Build Debug APK with Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
