@@ -25,15 +25,30 @@ jobs:
           mkdir -p app/src/main/assets
           mkdir -p app/src/main/res/values
           
-          find . -maxdepth 1 -name "*.kt" -exec cp {} app/src/main/java/com/jpwreach/lsposed/ \;
-          find . -maxdepth 1 -name "*.java" -exec cp {} app/src/main/java/com/jpwreach/lsposed/ \;
+          # Copy Kotlin source files
+          cp JpwHook.kt app/src/main/java/com/jpwreach/lsposed/
+          cp MainActivity.kt app/src/main/java/com/jpwreach/lsposed/
           
-          [ -f AndroidManifest.xml ] && cp AndroidManifest.xml app/src/main/
-          [ -f xposed_init ] && cp xposed_init app/src/main/assets/
-          [ -f strings.xml ] && cp strings.xml app/src/main/res/values/
-          [ -f arrays.xml ] && cp arrays.xml app/src/main/res/values/
-          [ -f build.gradle ] && cp build.gradle app/
-          [ -f build.gradle.kts ] && cp build.gradle.kts app/
+          # Copy Manifest, assets, and values
+          cp AndroidManifest.xml app/src/main/
+          cp xposed_init app/src/main/assets/
+          cp strings.xml app/src/main/res/values/
+          cp arrays.xml app/src/main/res/values/
+          
+          # Pick the app-level build.gradle.kts (the one containing 'android {')
+          for f in build.gradle*.kts; do
+            if grep -q "android {" "$f"; then
+              cp "$f" app/build.gradle.kts
+            fi
+          done
+          
+          # Fallback if none matched 'android {'
+          if [ ! -f app/build.gradle.kts ]; then
+            cp build.gradle.kts app/build.gradle.kts
+          fi
+          
+          # Remove duplicate gradle scripts from root so root only acts as parent project
+          rm -f build.gradle*.kts
 
       - name: Build Debug APK with Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
@@ -41,7 +56,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Run AssembleDebug
-        run: gradle assembleDebug
+        run: gradle :app:assembleDebug
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
