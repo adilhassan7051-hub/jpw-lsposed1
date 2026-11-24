@@ -405,7 +405,8 @@ class JpwHook : IXposedHookLoadPackage {
         val cookieStr = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
         if (cookieStr.isNotEmpty()) conn.setRequestProperty("Cookie", cookieStr)
         if (capturedAuthHeader.isNotEmpty() && !extraHeaders.containsKey("Authorization")) conn.setRequestProperty("Authorization", capturedAuthHeader)
-        if (capturedJioCenterId.isNotEmpty() && !extraHeaders.containsKey("X-JioCenterId")) conn.setRequestP
+        if (capturedJioCenterId.isNotEmpty() && !extraHeaders.containsKey("X-JioCenterId")) conn.setRequestProperty("X-JioCenterId", capturedJioCenterId)
+
         extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
 
         OutputStreamWriter(conn.outputStream).use { it.write(body) }
