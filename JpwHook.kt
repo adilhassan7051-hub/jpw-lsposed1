@@ -406,3 +406,118 @@ class JpwHook : IXposedHookLoadPackage {
         if (cookieStr.isNotEmpty()) conn.setRequestProperty("Cookie", cookieStr)
         if (capturedAuthHeader.isNotEmpty() && !extraHeaders.containsKey("Authorization")) conn.setRequestProperty("Authorization", capturedAuthHeader)
         if (capturedJioCenterId.isNotEmpty() && !extraHeaders.containsKey("X-JioCenterId")) conn.setRequestP
+        extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+
+        OutputStreamWriter(conn.outputStream).use { it.write(body) }
+        val responseBody = try { conn.inputStream.bufferedReader().readText() } catch (_: Exception) { conn.errorStream?.bufferedReader()?.readText() ?: "" }
+        conn.headerFields?.forEach { (key, values) ->
+            if (key != null && key.equals("Set-Cookie", ignoreCase = true)) values.forEach {
+                val p = it.split(";")[0].split("=", limit = 2)
+                if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
+            }
+        }
+        conn.disconnect()
+        return responseBody
+    }
+
+    private fun showToast(ctx: Context, msg: String) {
+        try { Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show() } } catch (_: Throwable) {}
+    }
+
+    private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
+    private fun makeRedGradient(ctx: Context) = android.graphics.drawable.GradientDrawable(
+        android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+        intArrayOf(0xFFe60012.toInt(), 0xFFff3a44.toInt())
+    ).apply { cornerRadius = dp(ctx, 28).toFloat() }
+
+    private fun bypassSignatureAndIntegrity(cl: ClassLoader) {
+        try { XposedHelpers.findAndHookMethod("com.jio.jpss.utils.CommonUtility", cl, "checkAPKInstallationValidation", Context::class.java, XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
+        try { XposedHelpers.findAndHookMethod("com.jio.jpss.utils.CommonUtility", cl, "checkIfAppCloned", Context::class.java, String::class.java, XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
+        try { XposedHelpers.findAndHookMethod("com.jio.jpss.AppSignatureHelper", cl, "getAppSignatures", XC_MethodReplacement.returnConstant(null)) } catch (_: Throwable) {}
+        try { XposedHelpers.findAndHookMethod("com.jio.jpss.utils.CommonUtility", cl, "getSigningCertSha256", Context::class.java, XC_MethodReplacement.returnConstant("dba24e5c252891027c96b8d21b1659dad47219f5d4e0be0bd898640509ca380c")) } catch (_: Throwable) {}
+        try { XposedHelpers.findClass("com.jio.jpss.asynctask.ValidateAppCheckAsyncTask", cl).declaredMethods.forEach { if (it.name == "doInBackground" || it.name == "onPostExecute") XposedBridge.hookMethod(it, XC_MethodReplacement.returnConstant(null)) } } catch (_: Throwable) {}
+    }
+
+    private fun bypassSimVerification(cl: ClassLoader) {
+        try {
+            val tm = Class.forName("android.telephony.TelephonyManager")
+            for (mName in listOf("getSubscriberId", "getLine1Number", "getSimSerialNumber", "getDeviceId", "getImei", "getMeid", "getSimOperator", "getSimOperatorName", "getNetworkOperator", "getNetworkOperatorName", "getSimCountryIso", "getNetworkCountryIso"))
+                tm.declaredMethods.filter { it.name == mName }.forEach { try { XposedBridge.hookMethod(it, XC_MethodReplacement.returnConstant("")) } catch (_: Throwable) {} }
+            for (mName in listOf("hasIccCard", "isNetworkRoaming", "isDataEnabled"))
+                tm.declaredMethods.filter { it.name == mName }.forEach { try { XposedBridge.hookMethod(it, XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {} }
+            tm.declaredMethods.filter { it.name == "getSimState" }.forEach { try { XposedBridge.hookMethod(it, XC_MethodReplacement.returnConstant(5)) } catch (_: Throwable) {} }
+        } catch (_: Throwable) {}
+    }
+
+    private fun hookHttpCookieCapture(cl: ClassLoader) {
+        try {
+            val reqBuilderCls = XposedHelpers.findClass("okhttp3.Request\$Builder", cl)
+            for (mName in listOf("addHeader", "header")) {
+                XposedHelpers.findAndHookMethod(reqBuilderCls, mName, String::class.java, String::class.java, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(p: MethodHookParam) { captureHeader(p.args[0] as? String ?: return, p.args[1] as? String ?: return) }
+                })
+            }
+        } catch (_: Throwable) {}
+        try {
+            XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "setRequestProperty", object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) { captureHeader(p.args.getOrNull(0) as? String ?: return, p.args.getOrNull(1) as? String ?: return) }
+            })
+        } catch (_: Throwable) {}
+        try {
+            XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "getHeaderField", object : XC_MethodHook() {
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    val conn = p.thisObject as? java.net.HttpURLConnection ?: return
+                    if (conn.url?.toString()?.contains("jpw.jio.com") != true) return
+                    if ((p.args.getOrNull(0) as? String)?.equals("Set-Cookie", ignoreCase = true) == true) {
+                        val parts = (p.result as? String ?: return).split(";")[0].split("=", limit = 2)
+                        if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
+                    }
+                }
+            })
+        } catch (_: Throwable) {}
+        try {
+            XposedBridge.hookAllMethods(XposedHelpers.findClass("okhttp3.CookieJar", cl), "saveFromResponse", object : XC_MethodHook() {
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    @Suppress("UNCHECKED_CAST")
+                    (p.args[1] as? List<Any> ?: return).forEach {
+                        val parts = it.toString().split(";")[0].split("=", limit = 2)
+                        if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
+                    }
+                }
+            })
+        } catch (_: Throwable) {}
+    }
+
+    private fun captureHeader(name: String, value: String) {
+        if (name.equals("Cookie", ignoreCase = true)) value.split(";").forEach {
+            val p = it.split("=", limit = 2)
+            if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
+        }
+        else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) capturedAuthHeader = value
+        else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) capturedJioCenterId = value
+    }
+
+    private fun registerBroadcastTrigger(cl: ClassLoader) {
+        try {
+            val mainCls = XposedHelpers.findClass("com.jio.jpss.MainActivity", cl)
+            XposedHelpers.findAndHookMethod(mainCls, "onCreate", Bundle::class.java, object : XC_MethodHook() {
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    val ctx = (p.thisObject as Activity).applicationContext
+                    ctx.registerReceiver(object : BroadcastReceiver() {
+                        override fun onReceive(context: Context?, intent: Intent?) {
+                            val techId = intent?.getStringExtra("techId") ?: return
+                            val password = intent?.getStringExtra("password") ?: return
+                            sessionCookies.clear()
+                            ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+                                .putString("technician_id", techId)
+                                .putString("password", password)
+                                .apply()
+                            Thread { autoReach(ctx) }.start()
+                        }
+                    }, IntentFilter("com.jpwreach.TRIGGER_REACH"))
+                }
+            })
+        } catch (_: Throwable) {}
+    }
+}
+// END_OF_FILE
