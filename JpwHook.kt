@@ -498,13 +498,13 @@ class JpwHook : IXposedHookLoadPackage {
         else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) capturedJioCenterId = value
     }
 
-    private fun registerBroadcastTrigger(cl: ClassLoader) {
+        private fun registerBroadcastTrigger(cl: ClassLoader) {
         try {
             val mainCls = XposedHelpers.findClass("com.jio.jpss.MainActivity", cl)
             XposedHelpers.findAndHookMethod(mainCls, "onCreate", Bundle::class.java, object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
                     val ctx = (p.thisObject as Activity).applicationContext
-                    ctx.registerReceiver(object : BroadcastReceiver() {
+                    val receiver = object : BroadcastReceiver() {
                         override fun onReceive(context: Context?, intent: Intent?) {
                             val techId = intent?.getStringExtra("techId") ?: return
                             val password = intent?.getStringExtra("password") ?: return
@@ -515,8 +515,14 @@ class JpwHook : IXposedHookLoadPackage {
                                 .apply()
                             Thread { autoReach(ctx) }.start()
                         }
-                    }, IntentFilter("com.jpwreach.TRIGGER_REACH"))
-                }
+                    }
+                    val filter = IntentFilter("com.jpwreach.TRIGGER_REACH")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+                    } else {
+                        ctx.registerReceiver(receiver, filter)
+                    }
+                                }
             })
         } catch (_: Throwable) {}
     }
