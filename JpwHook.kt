@@ -32,7 +32,9 @@ import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -85,23 +87,48 @@ class JpwHook : IXposedHookLoadPackage {
         hookHttpCookieCapture(cl)
     }
 
+    private fun resolvePromiseTrue(promiseObj: Any?) {
+        if (promiseObj == null) return
+        try {
+            XposedHelpers.callMethod(promiseObj, "resolve", """{"status" :"true"}""")
+            log("SIM_HOOK resolved Promise with true")
+        } catch (t: Throwable) {
+            log("SIM_HOOK promise resolve err: ${t.message}")
+        }
+    }
+
     private fun hookSimAuthReactBridge(cl: ClassLoader) {
         try {
             val reactUtilsClass = XposedHelpers.findClass("com.jio.jpss.AndroidReactUtils", cl)
             log("Found AndroidReactUtils for SIM Auth hook")
 
-            // 1. startSimAuth(String userId, String cliList, Promise promise)
+            // 1. startSimAuth(String userId, String cliList, Promise promise) -> block original SMS/OTP start & resolve true
             reactUtilsClass.declaredMethods.filter { it.name == "startSimAuth" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
                         val userId = p.args.getOrNull(0)
                         val cliList = p.args.getOrNull(1)
-                        log("SIM_HOOK startSimAuth -> userId=$userId | cliList=$cliList")
+                        val promiseObj = p.args.getOrNull(2)
+                        log("SIM_HOOK blocked startSimAuth -> userId=$userId | cliList=$cliList")
+                        resolvePromiseTrue(promiseObj)
+                        p.result = null
                     }
                 })
             }
 
-            // 2. getSimAuthStatus(String json, Promise promise)
+            // 2. startSMSListener(...) -> block SMS retriever / OTP send
+            reactUtilsClass.declaredMethods.filter { it.name == "startSMSListener" }.forEach { m ->
+                XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(p: MethodHookParam) {
+                        val promiseObj = p.args.getOrNull(2)
+                        log("SIM_HOOK blocked startSMSListener")
+                        resolvePromiseTrue(promiseObj)
+                        p.result = null
+                    }
+                })
+            }
+
+            // 3. getSimAuthStatus(String json, Promise promise) -> force true
             reactUtilsClass.declaredMethods.filter { it.name == "getSimAuthStatus" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
@@ -114,7 +141,7 @@ class JpwHook : IXposedHookLoadPackage {
                                     override fun beforeHookedMethod(rp: MethodHookParam) {
                                         val resVal = rp.args.firstOrNull()?.toString() ?: ""
                                         log("SIM_HOOK getSimAuthStatus resolve -> $resVal")
-                                        if (resVal.contains("\"status\" :\"false\"") || resVal.contains("\"status\":\"false\"")) {
+                                        if (resVal.contains("\"status\" :\"false\"") || resVal.contains("\"status\":\"false\"") || resVal.isEmpty()) {
                                             rp.args[0] = """{"status" :"true"}"""
                                             log("SIM_HOOK forced getSimAuthStatus resolve to true")
                                         }
@@ -128,7 +155,7 @@ class JpwHook : IXposedHookLoadPackage {
                 })
             }
 
-            // 3. verifyOtpResponse(String response, Context ctx, Promise promise)
+            // 4. verifyOtpResponse(String response, Context ctx, Promise promise)
             reactUtilsClass.declaredMethods.filter { it.name == "verifyOtpResponse" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
@@ -696,8 +723,21 @@ class JpwHook : IXposedHookLoadPackage {
                         if (urlStr.contains("jpw.jio.com")) {
                             log("URL.openConnection -> $urlStr")
                         }
+                        if (urlStr.contains("SendSMSForSimAuth", ignoreCase = true)) {
+                            log("SIM_HOOK intercepted SendSMSForSimAuth connection")
+                        }
                     } catch (t: Throwable) {
                         log("openConnection log err: ${t.message}")
+                    }
+                }
+            })
+            XposedBridge.hookAllMethods(HttpURLConnection::class.java, "getInputStream", object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    val urlStr = (p.thisObject as? HttpURLConnection)?.url?.toString() ?: ""
+                    if (urlStr.contains("SendSMSForSimAuth", ignoreCase = true)) {
+                        val fakeJson = """{"IsSuccessful":true,"RequestID":"bypassed","Message":"OK"}"""
+                        p.result = ByteArrayInputStream(fakeJson.toByteArray(Charsets.UTF_8)) as InputStream
+                        log("SIM_HOOK mocked SendSMSForSimAuth response")
                     }
                 }
             })
