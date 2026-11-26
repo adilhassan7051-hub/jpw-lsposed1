@@ -294,17 +294,29 @@ class JpwHook : IXposedHookLoadPackage {
                     .setPositiveButton("SAVE & RUN") { _, _ ->
                         val tid = techIdField.text.toString().trim()
                         val pwd = passField.text.toString().trim()
-                        if (tid.isNotEmpty() && pwd.isNotEmpty()) {
-                            prefs.edit().putString("technician_id", tid).putString("password", pwd).apply()
+                        if (tid.isNotEmpty()) {
+                            prefs.edit()
+                                .putString("technician_id", tid)
+                                .putString("password", pwd)
+                                .apply()
+
                             Thread {
-                                if (doLogin(ctx, tid, pwd)) {
+                                Handler(Looper.getMainLooper()).post { extractWebViewCookies() }
+                                Thread.sleep(200)
+                                loadCookies(ctx)
+
+                                val hasExistingSession = sessionCookies.isNotEmpty() || capturedAuthHeader.isNotEmpty()
+                                if (hasExistingSession) {
+                                    log("Using existing live/saved session; skipping doLogin")
+                                    autoReach(ctx)
+                                } else if (pwd.isNotEmpty() && doLogin(ctx, tid, pwd)) {
                                     autoReach(ctx)
                                 } else {
                                     showToast(ctx, "No session — login failed or missing. Check credentials.")
                                 }
                             }.start()
                         } else {
-                            showToast(ctx, "Enter both Technician ID and Password")
+                            showToast(ctx, "Enter Technician ID")
                         }
                     }
                     .show()
