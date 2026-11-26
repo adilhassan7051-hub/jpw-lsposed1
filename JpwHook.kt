@@ -45,7 +45,7 @@ class JpwHook : IXposedHookLoadPackage {
     companion object {
         private const val TAG = "JpwHook"
         private const val TARGET_PKG = "com.jio.jpss"
-        private fun log(s: String) = XposedBridge.log("[$TAG] $s")
+        private fun log(s: String) = XposedBridge.log("[$TAG]$s")
     }
 
     private var appContextRef: Context? = null
@@ -67,7 +67,7 @@ class JpwHook : IXposedHookLoadPackage {
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != TARGET_PKG) return
-        log("Loaded target package: ${lpparam.packageName} (process: ${lpparam.processName})")
+        log("Loaded target package: ${lpparam.packageName} (process:${lpparam.processName})")
         val cl = lpparam.classLoader
         bypassMockLocation()
         bypassDeveloperSettings()
@@ -183,7 +183,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             } catch (t: Throwable) {
-                log("RootBeer class not found ($clsName): ${t.message}")
+                log("RootBeer class not found ($clsName):${t.message}")
             }
         }
     }
@@ -205,7 +205,7 @@ class JpwHook : IXposedHookLoadPackage {
                     } catch (_: Throwable) {}
                 }
             } catch (t: Throwable) {
-                log("AppSecurityModule not found ($clsName): ${t.message}")
+                log("AppSecurityModule not found ($clsName):${t.message}")
             }
         }
     }
@@ -223,7 +223,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             } catch (tErr: Throwable) {
-                log("OTP class not found ($t): ${tErr.message}")
+                log("OTP class not found ($t):${tErr.message}")
             }
         }
     }
@@ -260,7 +260,7 @@ class JpwHook : IXposedHookLoadPackage {
     private fun onAutoReachClicked(ctx: Context) {
         try {
             appContextRef = ctx.applicationContext
-            log("onAutoReachClicked entered | ctx=${ctx.javaClass.name} | isActivity=${ctx is Activity}")
+            log("onAutoReachClicked entered | ctx=${ctx.javaClass.name} \vert{} isActivity=${ctx is Activity}")
             extractWebViewCookies()
             loadCookies(ctx)
 
@@ -339,13 +339,19 @@ class JpwHook : IXposedHookLoadPackage {
         val jioCenterId = capturedJioCenterId.ifEmpty { prefs.getString("saved_center", "") ?: "" }
         val techId = prefs.getString("technician_id", "") ?: ""
 
-        log("DEBUG autoReach -> techId='$techId' | center='$jioCenterId' | cookies=${sessionCookies.keys} | authPresent=${capturedAuthHeader.isNotEmpty()}")
+        val effectiveAuth = when {
+            capturedAuthHeader.isNotEmpty() -> capturedAuthHeader
+            sessionCookies["authToken"]?.isNotEmpty() == true -> sessionCookies["authToken"]!!
+            else -> ""
+        }
 
-        if (sessionCookies.isEmpty() && capturedAuthHeader.isEmpty() && techId.isNotEmpty()) {
+        log("DEBUG autoReach -> techId='$techId' \vert{} center='$jioCenterId' | cookies=${sessionCookies.keys} \vert{} authPresent=${effectiveAuth.isNotEmpty()}")
+
+        if (sessionCookies.isEmpty() && effectiveAuth.isEmpty() && techId.isNotEmpty()) {
             val techPass = prefs.getString("password", "") ?: ""
             if (techPass.isNotEmpty()) doLogin(ctx, techId, techPass)
         }
-        if (sessionCookies.isEmpty() && capturedAuthHeader.isEmpty()) {
+        if (sessionCookies.isEmpty() && effectiveAuth.isEmpty()) {
             showToast(ctx, "No session — login failed or missing. Check credentials.")
             return
         }
@@ -365,9 +371,10 @@ class JpwHook : IXposedHookLoadPackage {
             "X-Signature" to generateSignature(woBodySorted)
         )
         if (jioCenterId.isNotEmpty()) woHeaders["X-JioCenterId"] = jioCenterId
+        if (effectiveAuth.isNotEmpty()) woHeaders["Authorization"] = effectiveAuth
         extraCapturedHeaders.forEach { (k, v) -> if (!woHeaders.containsKey(k)) woHeaders[k] = v }
 
-        log("WO req headers -> $woHeaders | cookiesKeys=${sessionCookies.keys}")
+        log("WO req headers -> $woHeaders \vert{} cookiesKeys=${sessionCookies.keys}")
         val woResult = httpPostNoSig(WO_URL, woBodySorted, woHeaders)
         log("WO raw -> result=$woResult")
 
@@ -407,13 +414,14 @@ class JpwHook : IXposedHookLoadPackage {
             }
             val reachHeaders = mutableMapOf("Referer" to "https://jpw.jio.com/retailv1/workOrderV3/reached")
             if (jioCenterId.isNotEmpty()) reachHeaders["X-JioCenterId"] = jioCenterId
+            if (effectiveAuth.isNotEmpty()) reachHeaders["Authorization"] = effectiveAuth
             try {
                 val bodyStr = toSortedJsonString(reachPayload)
                 reachHeaders["X-Signature"] = generateSignature(bodyStr)
                 if (JSONObject(httpPostNoSig(REACH_URL, bodyStr, reachHeaders)).optBoolean("IsSuccessful", false)) success++ else fail++
             } catch (_: Exception) { fail++ }
         }
-        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of $total")
+        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of$total")
     }
 
     private fun doLogin(ctx: Context, techId: String, techPass: String): Boolean {
@@ -520,7 +528,7 @@ class JpwHook : IXposedHookLoadPackage {
         OutputStreamWriter(conn.outputStream).use { it.write(body) }
         val code = try { conn.responseCode } catch (_: Exception) { -1 }
         val responseBody = try { conn.inputStream.bufferedReader().readText() } catch (_: Exception) { conn.errorStream?.bufferedReader()?.readText() ?: "" }
-        log("HTTP POST $urlStr -> code=$code | len=${responseBody.length}")
+        log("HTTP POST $urlStr -> code=$code \vert{} len=${responseBody.length}")
         conn.headerFields?.forEach { (key, values) ->
             if (key != null && key.equals("Set-Cookie", ignoreCase = true)) values.forEach {
                 val p = it.split(";")[0].split("=", limit = 2)
@@ -597,7 +605,7 @@ class JpwHook : IXposedHookLoadPackage {
                                 headerMap[name] = valStr
                                 captureHeader(name, valStr)
                             }
-                            log("Real Req -> $urlStr | headers=$headerMap")
+                            log("Real Req -> $urlStr \vert{} headers=$headerMap")
                         }
                     } catch (t: Throwable) {
                         log("newCall inspect err: ${t.message}")
@@ -623,7 +631,7 @@ class JpwHook : IXposedHookLoadPackage {
                 override fun beforeHookedMethod(p: MethodHookParam) {
                     val u = p.args[0] as? String ?: return
                     if (u.contains("GetWorkOrderList") || u.contains("UpdateWorkOrder")) {
-                        log("App Req URL -> $u | authPresent=${capturedAuthHeader.isNotEmpty()} | center=$capturedJioCenterId | cookies=${sessionCookies.keys}")
+                        log("App Req URL -> $u \vert{} authPresent=${capturedAuthHeader.isNotEmpty()} | center=$capturedJioCenterId \vert{} cookies=${sessionCookies.keys}")
                     }
                 }
             })
@@ -685,28 +693,4 @@ class JpwHook : IXposedHookLoadPackage {
                 }
             })
         } catch (t: Throwable) {
-            log("CookieJar hook err: ${t.message}")
-        }
-    }
-
-    private fun captureHeader(name: String, value: String) {
-        if (name.equals("Cookie", ignoreCase = true)) {
-            value.split(";").forEach {
-                val p = it.split("=", limit = 2)
-                if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
-            }
-            saveCookies(appContextRef)
-        } else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) {
-            capturedAuthHeader = value
-            saveCookies(appContextRef)
-        } else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) {
-            capturedJioCenterId = value
-            saveCookies(appContextRef)
-        } else if (name.startsWith("X-", ignoreCase = true) && value.isNotEmpty()) {
-            extraCapturedHeaders[name] = value
-            if (name.contains("Sig", ignoreCase = true) || name.contains("Token", ignoreCase = true) || name.contains("Auth", ignoreCase = true)) {
-                log("Captured header -> $name=${value.take(24)}...")
-            }
-        }
-    }
-}
+            
