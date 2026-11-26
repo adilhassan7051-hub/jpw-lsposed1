@@ -18,6 +18,7 @@ import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.WebView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -37,6 +38,7 @@ import java.util.TreeMap
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import javax.net.ssl.SSLSocketFactory
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -588,58 +590,6 @@ class JpwHook : IXposedHookLoadPackage {
         }
 
         try {
-            val okHttpClientCls = XposedHelpers.findClass("okhttp3.OkHttpClient", cl)
-            XposedBridge.hookAllMethods(okHttpClientCls, "newCall", object : XC_MethodHook() {
-                override fun beforeHookedMethod(p: MethodHookParam) {
-                    try {
-                        val req = p.args.firstOrNull() ?: return
-                        val urlObj = XposedHelpers.callMethod(req, "url")
-                        val urlStr = urlObj?.toString() ?: ""
-                        if (urlStr.contains("GetWorkOrderList") || urlStr.contains("UpdateWorkOrder") || urlStr.contains("UserLogin")) {
-                            val headersObj = XposedHelpers.callMethod(req, "headers")
-                            val headerNamesObj = XposedHelpers.callMethod(headersObj, "names") as? Set<*>
-                            val headerMap = linkedMapOf<String, String>()
-                            headerNamesObj?.forEach { nameObj ->
-                                val name = nameObj?.toString() ?: return@forEach
-                                val valStr = XposedHelpers.callMethod(headersObj, "get", name)?.toString() ?: ""
-                                headerMap[name] = valStr
-                                captureHeader(name, valStr)
-                            }
-                            log("Real Req -> $urlStr | headers=$headerMap")
-                        }
-                    } catch (t: Throwable) {
-                        log("newCall inspect err: ${t.message}")
-                    }
-                }
-            })
-        } catch (t: Throwable) {
-            log("OkHttpClient hook err: ${t.message}")
-        }
-
-        try {
-            val reqBuilderCls = XposedHelpers.findClass("okhttp3.Request\$Builder", cl)
-            for (mName in listOf("addHeader", "header")) {
-                XposedHelpers.findAndHookMethod(reqBuilderCls, mName, String::class.java, String::class.java, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(p: MethodHookParam) {
-                        val k = p.args[0] as? String ?: return
-                        val v = p.args[1] as? String ?: return
-                        captureHeader(k, v)
-                    }
-                })
-            }
-            XposedHelpers.findAndHookMethod(reqBuilderCls, "url", String::class.java, object : XC_MethodHook() {
-                override fun beforeHookedMethod(p: MethodHookParam) {
-                    val u = p.args[0] as? String ?: return
-                    if (u.contains("GetWorkOrderList") || u.contains("UpdateWorkOrder")) {
-                        log("App Req URL -> $u | authPresent=${capturedAuthHeader.isNotEmpty()} | center=$capturedJioCenterId | cookies=${sessionCookies.keys}")
-                    }
-                }
-            })
-        } catch (t: Throwable) {
-            log("Request.Builder hook err: ${t.message}")
-        }
-
-        try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "setRequestProperty", object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
                     val k = p.args.getOrNull(0) as? String ?: return
@@ -674,26 +624,37 @@ class JpwHook : IXposedHookLoadPackage {
         }
 
         try {
-            XposedBridge.hookAllMethods(XposedHelpers.findClass("okhttp3.CookieJar", cl), "saveFromResponse", object : XC_MethodHook() {
+            XposedBridge.hookAllMethods(SSLSocketFactory::class.java, "createSocket", object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
-                    @Suppress("UNCHECKED_CAST")
-                    (p.args[1] as? List<Any> ?: return).forEach { cookieObj ->
-                        try {
-                            val name = XposedHelpers.callMethod(cookieObj, "name") as? String
-                            val value = XposedHelpers.callMethod(cookieObj, "value") as? String
-                            if (!name.isNullOrBlank() && value != null) {
-                                sessionCookies[name.trim()] = value.trim()
-                            }
-                        } catch (_: Throwable) {
-                            val parts = cookieObj.toString().split(";")[0].split("=", limit = 2)
-                            if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
-                        }
+                    val host = p.args.getOrNull(0) as? String
+                    if (host != null && host.contains("jpw.jio.com")) {
+                        log("SSLSocket createSocket -> $host")
                     }
-                    saveCookies(appContextRef)
                 }
             })
         } catch (t: Throwable) {
-            log("CookieJar hook err: ${t.message}")
+            log("SSLSocketFactory hook err: ${t.message}")
+        }
+
+        try {
+            XposedBridge.hookAllMethods(WebView::class.java, "loadUrl", object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    val u = p.args.firstOrNull() as? String ?: return
+                    if (u.contains("jpw.jio.com") || u.contains("workOrder", ignoreCase = true)) {
+                        log("WebView.loadUrl -> ${u.take(160)}")
+                    }
+                }
+            })
+            XposedBridge.hookAllMethods(WebView::class.java, "evaluateJavascript", object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    val js = p.args.firstOrNull() as? String ?: return
+                    if (js.contains("workOrder", ignoreCase = true) || js.contains("center", ignoreCase = true) || js.contains("token", ignoreCase = true)) {
+                        log("WebView.evalJS -> ${js.take(120)}")
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            log("WebView hook err: ${t.message}")
         }
     }
 
