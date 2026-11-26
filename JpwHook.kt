@@ -563,6 +563,23 @@ class JpwHook : IXposedHookLoadPackage {
 
     private fun hookHttpCookieCapture(cl: ClassLoader) {
         try {
+            XposedBridge.hookAllMethods(URL::class.java, "openConnection", object : XC_MethodHook() {
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    try {
+                        val urlStr = (p.thisObject as? URL)?.toString() ?: return
+                        if (urlStr.contains("jpw.jio.com")) {
+                            log("URL.openConnection -> $urlStr")
+                        }
+                    } catch (t: Throwable) {
+                        log("openConnection log err: ${t.message}")
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            log("URL.openConnection hook err: ${t.message}")
+        }
+
+        try {
             val okHttpClientCls = XposedHelpers.findClass("okhttp3.OkHttpClient", cl)
             XposedBridge.hookAllMethods(okHttpClientCls, "newCall", object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
@@ -617,7 +634,13 @@ class JpwHook : IXposedHookLoadPackage {
         try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "setRequestProperty", object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
-                    captureHeader(p.args.getOrNull(0) as? String ?: return, p.args.getOrNull(1) as? String ?: return)
+                    val k = p.args.getOrNull(0) as? String ?: return
+                    val v = p.args.getOrNull(1) as? String ?: return
+                    val connUrl = (p.thisObject as? java.net.URLConnection)?.url?.toString() ?: ""
+                    if (connUrl.contains("jpw.jio.com")) {
+                        log("URLConn Header -> $connUrl | $k=$v")
+                    }
+                    captureHeader(k, v)
                 }
             })
         } catch (t: Throwable) {
