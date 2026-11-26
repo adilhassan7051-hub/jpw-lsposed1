@@ -78,10 +78,68 @@ class JpwHook : IXposedHookLoadPackage {
         bypassDeveloperSettings()
         bypassRootBeer(cl)
         bypassAppSecurityModule(cl)
+        hookSimAuthReactBridge(cl)
         hookAnyActivityResume(cl)
         bypassSimVerification(cl)
         bypassSignatureAndIntegrity(cl)
         hookHttpCookieCapture(cl)
+    }
+
+    private fun hookSimAuthReactBridge(cl: ClassLoader) {
+        try {
+            val reactUtilsClass = XposedHelpers.findClass("com.jio.jpss.AndroidReactUtils", cl)
+            log("Found AndroidReactUtils for SIM Auth hook")
+
+            // 1. startSimAuth(String userId, String cliList, Promise promise)
+            reactUtilsClass.declaredMethods.filter { it.name == "startSimAuth" }.forEach { m ->
+                XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(p: MethodHookParam) {
+                        val userId = p.args.getOrNull(0)
+                        val cliList = p.args.getOrNull(1)
+                        log("SIM_HOOK startSimAuth -> userId=$userId | cliList=$cliList")
+                    }
+                })
+            }
+
+            // 2. getSimAuthStatus(String json, Promise promise)
+            reactUtilsClass.declaredMethods.filter { it.name == "getSimAuthStatus" }.forEach { m ->
+                XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(p: MethodHookParam) {
+                        val arg0 = p.args.getOrNull(0)
+                        val promiseObj = p.args.getOrNull(1)
+                        log("SIM_HOOK getSimAuthStatus called -> arg0=$arg0 | promise=${promiseObj?.javaClass?.name}")
+                        if (promiseObj != null) {
+                            try {
+                                XposedBridge.hookAllMethods(promiseObj.javaClass, "resolve", object : XC_MethodHook() {
+                                    override fun beforeHookedMethod(rp: MethodHookParam) {
+                                        val resVal = rp.args.firstOrNull()?.toString() ?: ""
+                                        log("SIM_HOOK getSimAuthStatus resolve -> $resVal")
+                                        if (resVal.contains("\"status\" :\"false\"") || resVal.contains("\"status\":\"false\"")) {
+                                            rp.args[0] = """{"status" :"true"}"""
+                                            log("SIM_HOOK forced getSimAuthStatus resolve to true")
+                                        }
+                                    }
+                                })
+                            } catch (t: Throwable) {
+                                log("SIM_HOOK promise hook err: ${t.message}")
+                            }
+                        }
+                    }
+                })
+            }
+
+            // 3. verifyOtpResponse(String response, Context ctx, Promise promise)
+            reactUtilsClass.declaredMethods.filter { it.name == "verifyOtpResponse" }.forEach { m ->
+                XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(p: MethodHookParam) {
+                        val rawResp = p.args.getOrNull(0)?.toString() ?: ""
+                        log("SIM_HOOK verifyOtpResponse -> ${rawResp.take(200)}")
+                    }
+                })
+            }
+        } catch (t: Throwable) {
+            log("hookSimAuthReactBridge err: ${t.message}")
+        }
     }
 
     private fun hookAnyActivityResume(cl: ClassLoader) {
