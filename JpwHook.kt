@@ -158,7 +158,7 @@ class JpwHook : IXposedHookLoadPackage {
         try {
             val prefsDir = File(ctx.applicationInfo.dataDir, "shared_prefs")
             val files = prefsDir.listFiles()?.filter { it.extension == "xml" } ?: emptyList()
-            log("Prefs files (${files.size}):${files.map { it.nameWithoutExtension }}")
+            log("Prefs files (${files.size}): ${files.map { it.nameWithoutExtension }}")
             for (f in files) {
                 val name = f.nameWithoutExtension
                 if (name == PREF_NAME) continue
@@ -172,7 +172,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                     "$k=$safeVal"
                 }
-                log("SP[$name] ->$interesting")
+                log("SP[$name] -> $interesting")
             }
         } catch (t: Throwable) {
             log("dumpAppPrefs err: ${t.message}")
@@ -182,7 +182,7 @@ class JpwHook : IXposedHookLoadPackage {
     private fun dumpDatabasesAndStorage(ctx: Context, act: Activity?) {
         try {
             val dbs = ctx.databaseList()?.toList() ?: emptyList()
-            log("DBs (${dbs.size}):$dbs")
+            log("DBs (${dbs.size}): $dbs")
         } catch (t: Throwable) {
             log("databaseList err: ${t.message}")
         }
@@ -203,20 +203,9 @@ class JpwHook : IXposedHookLoadPackage {
                     findWebViews(targetAct.window?.decorView)
                     log("Found WebViews: ${webViews.size}")
                     webViews.forEachIndexed { idx, wv ->
-                        val js = """
-                            (function(){
-                              try {
-                                var ls = {};
-                                for (var i = 0; i < localStorage.length; i++) {
-                                  var k = localStorage.key(i);
-                                  ls[k] = String(localStorage.getItem(k)).slice(0, 80);
-                                }
-                                return JSON.stringify({url: location.href, lsKeys: Object.keys(ls), ls: ls});
-                              } catch(e) { return "err:" + e; }
-                            })()
-                        """.trimIndent()
+                        val js = "(function(){try{var ls={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);ls[k]=String(localStorage.getItem(k)).slice(0,80);}return JSON.stringify({url:location.href,lsKeys:Object.keys(ls),ls:ls});}catch(e){return 'err:'+e;}})()"
                         wv.evaluateJavascript(js) { res ->
-                            log("LS[$idx] ->${res?.take(300)}")
+                            log("LS[$idx] -> ${res?.take(300)}")
                         }
                     }
                 } catch (t: Throwable) {
@@ -262,7 +251,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             } catch (t: Throwable) {
-                log("RootBeer class not found ($clsName):${t.message}")
+                log("RootBeer class not found ($clsName): ${t.message}")
             }
         }
     }
@@ -296,11 +285,11 @@ class JpwHook : IXposedHookLoadPackage {
                         XposedBridge.hookMethod(m, rep)
                         log("Hooked AppSecurityModule method: ${m.name}")
                     } catch (hookErr: Throwable) {
-                        log("Hook err on ${m.name}:${hookErr.message}")
+                        log("Hook err on ${m.name}: ${hookErr.message}")
                     }
                 }
             } catch (t: Throwable) {
-                log("AppSecurityModule not found ($clsName):${t.message}")
+                log("AppSecurityModule not found ($clsName): ${t.message}")
             }
         }
     }
@@ -325,12 +314,12 @@ class JpwHook : IXposedHookLoadPackage {
                             })
                             log("Hooked $clsName.doInBackground")
                         } catch (hookErr: Throwable) {
-                            log("OTP hook err on $clsName:${hookErr.message}")
+                            log("OTP hook err on $clsName: ${hookErr.message}")
                         }
                     }
                 }
             } catch (tErr: Throwable) {
-                log("OTP class not found ($clsName):${tErr.message}")
+                log("OTP class not found ($clsName): ${tErr.message}")
             }
         }
     }
@@ -530,7 +519,7 @@ class JpwHook : IXposedHookLoadPackage {
                 if (JSONObject(httpPostNoSig(REACH_URL, bodyStr, reachHeaders)).optBoolean("IsSuccessful", false)) success++ else fail++
             } catch (_: Exception) { fail++ }
         }
-        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of$total")
+        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of $total")
     }
 
     private fun doLogin(ctx: Context, techId: String, techPass: String): Boolean {
@@ -775,4 +764,14 @@ class JpwHook : IXposedHookLoadPackage {
         } else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) {
             capturedAuthHeader = value
             saveCookies(appContextRef)
-        } else if (name.equals("X-JioCenterId
+        } else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) {
+            capturedJioCenterId = value
+            saveCookies(appContextRef)
+        } else if (name.startsWith("X-", ignoreCase = true) && value.isNotEmpty()) {
+            extraCapturedHeaders[name] = value
+            if (name.contains("Sig", ignoreCase = true) || name.contains("Token", ignoreCase = true) || name.contains("Auth", ignoreCase = true)) {
+                log("Captured header -> $name=${value.take(24)}...")
+            }
+        }
+    }
+}
