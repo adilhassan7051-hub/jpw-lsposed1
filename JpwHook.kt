@@ -40,9 +40,11 @@ class JpwHook : IXposedHookLoadPackage {
         private fun log(s: String) = XposedBridge.log("[$TAG] $s")
     }
 
+    private var appContextRef: Context? = null
     private var capturedAuthHeader: String = ""
     private var capturedJioCenterId: String = ""
-    private val sessionCookies = mutableMapOf<String, String>()
+    private val extraCapturedHeaders = ConcurrentHashMap<String, String>()
+    private val sessionCookies = ConcurrentHashMap<String, String>()
     private val registeredReceivers = ConcurrentHashMap.newKeySet<String>()
 
     private val REACH_URL = "https://jpw.jio.com/lco/api/workorder-maintenance/WorkOrder/UpdateWorkOrder"
@@ -78,6 +80,7 @@ class JpwHook : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(p: MethodHookParam) {
                         val activity = p.thisObject as? Activity ?: return
+                        appContextRef = activity.applicationContext
                         log("Activity resumed: ${activity.javaClass.name}")
                         addFab(activity)
                         ensureBroadcastReceiver(activity.applicationContext)
@@ -247,6 +250,7 @@ class JpwHook : IXposedHookLoadPackage {
     }
 
     private fun onAutoReachClicked(ctx: Context) {
+        appContextRef = ctx.applicationContext
         extractWebViewCookies()
         loadCookies(ctx)
 
@@ -329,11 +333,17 @@ class JpwHook : IXposedHookLoadPackage {
             put("offsetValue", 0)
             put("TechnicianDesignationType", "Technician")
         }
-        val woHeaders = mutableMapOf("Referer" to "https://jpw.jio.com/v1/workOrderListV3")
+        val woBodySorted = toSortedJsonString(woPayload)
+        val woHeaders = mutableMapOf(
+            "Referer" to "https://jpw.jio.com/v1/workOrderListV3",
+            "X-Signature" to generateSignature(woBodySorted)
+        )
         if (jioCenterId.isNotEmpty()) woHeaders["X-JioCenterId"] = jioCenterId
-        val woResult = httpPostNoSig(WO_URL, woPayload.toString(), woHeaders)
-        log("WO raw -> result=$woResult")
+        extraCapturedHeaders.forEach { (k, v) -> if (!woHeaders.containsKey(k)) woHeaders[k] = v }
 
+        log("WO req headers -> $woHeaders | cookiesKeys=${sessionCookies.keys}")
+        val woResult = httpPostNoSig(WO_URL, woBodySorted, woHeaders)
+        log("WO raw -> result=$woResult")
 
         val woJson = try { JSONObject(woResult) } catch (_: Exception) {
             showToast(ctx, "WO fetch failed! Tap Refresh (↻) and try again.")
@@ -390,7 +400,14 @@ class JpwHook : IXposedHookLoadPackage {
             put("AppVersion", APP_VERSION)
         }
         return try {
-            val json = JSONObject(httpPostNoSig(LOGIN_URL, payload.toString(), mapOf("Referer" to "https://jpw.jio.com/v1/OIDLOGIN")))
+            val bodyStr = toSortedJsonString(payload)
+            val loginHeaders = mapOf(
+                "Referer" to "https://jpw.jio.com/v1/OIDLOGIN",
+                "X-Signature" to generateSignature(bodyStr)
+            )
+            val raw = httpPostNoSig(LOGIN_URL, bodyStr, loginHeaders)
+            log("doLogin raw -> $raw")
+            val json = JSONObject(raw)
             if (json.optBoolean("IsSuccessful", false)) {
                 val sid = json.optString("sessionId", "")
                 if (sid.isNotEmpty()) sessionCookies["JPSSSessionID"] = sid
@@ -400,10 +417,11 @@ class JpwHook : IXposedHookLoadPackage {
         } catch (_: Exception) { false }
     }
 
-    private fun saveCookies(ctx: Context) {
+    private fun saveCookies(ctx: Context?) {
+        val targetCtx = ctx ?: appContextRef ?: return
         try {
             val cookieStr = sessionCookies.entries.joinToString("||") { "${it.key}=${it.value}" }
-            ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            targetCtx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
                 .putString("saved_cookies", cookieStr)
                 .putString("saved_auth", capturedAuthHeader)
                 .putString("saved_center", capturedJioCenterId)
@@ -457,11 +475,14 @@ class JpwHook : IXposedHookLoadPackage {
             doInput = true
             connectTimeout = 30000
             readTimeout = 30000
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+            setRequestProperty("User-Agent", "okhttp/4.12.0")
             setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "*/*")
+            setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Origin", "https://jpw.jio.com")
             setRequestProperty("Referer", "https://jpw.jio.com/retailv1/workOrderV3/reached")
+            setRequestProperty("AppVersion", APP_VERSION)
+            setRequestProperty("DeviceId", DEVICE_ID)
+            setRequestProperty("Handset", "android")
         }
         val cookieStr = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
         if (cookieStr.isNotEmpty()) conn.setRequestProperty("Cookie", cookieStr)
@@ -478,6 +499,7 @@ class JpwHook : IXposedHookLoadPackage {
                 if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
             }
         }
+        saveCookies(appContextRef)
         conn.disconnect()
         return responseBody
     }
@@ -516,9 +538,21 @@ class JpwHook : IXposedHookLoadPackage {
             val reqBuilderCls = XposedHelpers.findClass("okhttp3.Request\$Builder", cl)
             for (mName in listOf("addHeader", "header")) {
                 XposedHelpers.findAndHookMethod(reqBuilderCls, mName, String::class.java, String::class.java, object : XC_MethodHook() {
-                    override fun beforeHookedMethod(p: MethodHookParam) { captureHeader(p.args[0] as? String ?: return, p.args[1] as? String ?: return) }
+                    override fun beforeHookedMethod(p: MethodHookParam) {
+                        val k = p.args[0] as? String ?: return
+                        val v = p.args[1] as? String ?: return
+                        captureHeader(k, v)
+                    }
                 })
             }
+            XposedHelpers.findAndHookMethod(reqBuilderCls, "url", String::class.java, object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    val u = p.args[0] as? String ?: return
+                    if (u.contains("GetWorkOrderList") || u.contains("UpdateWorkOrder")) {
+                        log("App Req URL -> $u | authPresent=${capturedAuthHeader.isNotEmpty()} | center=$capturedJioCenterId | cookies=${sessionCookies.keys}")
+                    }
+                }
+            })
         } catch (_: Throwable) {}
         try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "setRequestProperty", object : XC_MethodHook() {
@@ -532,7 +566,10 @@ class JpwHook : IXposedHookLoadPackage {
                     if (conn.url?.toString()?.contains("jpw.jio.com") != true) return
                     if ((p.args.getOrNull(0) as? String)?.equals("Set-Cookie", ignoreCase = true) == true) {
                         val parts = (p.result as? String ?: return).split(";")[0].split("=", limit = 2)
-                        if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
+                        if (parts.size == 2) {
+                            sessionCookies[parts[0].trim()] = parts[1].trim()
+                            saveCookies(appContextRef)
+                        }
                     }
                 }
             })
@@ -541,21 +578,42 @@ class JpwHook : IXposedHookLoadPackage {
             XposedBridge.hookAllMethods(XposedHelpers.findClass("okhttp3.CookieJar", cl), "saveFromResponse", object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
                     @Suppress("UNCHECKED_CAST")
-                    (p.args[1] as? List<Any> ?: return).forEach {
-                        val parts = it.toString().split(";")[0].split("=", limit = 2)
-                        if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
+                    (p.args[1] as? List<Any> ?: return).forEach { cookieObj ->
+                        try {
+                            val name = XposedHelpers.callMethod(cookieObj, "name") as? String
+                            val value = XposedHelpers.callMethod(cookieObj, "value") as? String
+                            if (!name.isNullOrBlank() && value != null) {
+                                sessionCookies[name.trim()] = value.trim()
+                            }
+                        } catch (_: Throwable) {
+                            val parts = cookieObj.toString().split(";")[0].split("=", limit = 2)
+                            if (parts.size == 2) sessionCookies[parts[0].trim()] = parts[1].trim()
+                        }
                     }
+                    saveCookies(appContextRef)
                 }
             })
         } catch (_: Throwable) {}
     }
 
     private fun captureHeader(name: String, value: String) {
-        if (name.equals("Cookie", ignoreCase = true)) value.split(";").forEach {
-            val p = it.split("=", limit = 2)
-            if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
+        if (name.equals("Cookie", ignoreCase = true)) {
+            value.split(";").forEach {
+                val p = it.split("=", limit = 2)
+                if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
+            }
+            saveCookies(appContextRef)
+        } else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) {
+            capturedAuthHeader = value
+            saveCookies(appContextRef)
+        } else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) {
+            capturedJioCenterId = value
+            saveCookies(appContextRef)
+        } else if (name.startsWith("X-", ignoreCase = true) && value.isNotEmpty()) {
+            extraCapturedHeaders[name] = value
+            if (name.contains("Sig", ignoreCase = true) || name.contains("Token", ignoreCase = true) || name.contains("Auth", ignoreCase = true)) {
+                log("Captured header -> $name=${value.take(24)}...")
+            }
         }
-        else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) capturedAuthHeader = value
-        else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) capturedJioCenterId = value
     }
 }
