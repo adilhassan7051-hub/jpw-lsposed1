@@ -17,6 +17,7 @@ import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.Button
@@ -52,6 +53,7 @@ class JpwHook : IXposedHookLoadPackage {
     }
 
     private var appContextRef: Context? = null
+    private var lastActivityRef: Activity? = null
     private var capturedAuthHeader: String = ""
     private var capturedJioCenterId: String = ""
     private val extraCapturedHeaders = ConcurrentHashMap<String, String>()
@@ -92,6 +94,7 @@ class JpwHook : IXposedHookLoadPackage {
                     override fun afterHookedMethod(p: MethodHookParam) {
                         val activity = p.thisObject as? Activity ?: return
                         appContextRef = activity.applicationContext
+                        lastActivityRef = activity
                         log("Activity resumed: ${activity.javaClass.name}")
                         addFab(activity)
                         ensureBroadcastReceiver(activity.applicationContext)
@@ -173,6 +176,53 @@ class JpwHook : IXposedHookLoadPackage {
             }
         } catch (t: Throwable) {
             log("dumpAppPrefs err: ${t.message}")
+        }
+    }
+
+    private fun dumpDatabasesAndStorage(ctx: Context, act: Activity?) {
+        try {
+            val dbs = ctx.databaseList()?.toList() ?: emptyList()
+            log("DBs (${dbs.size}): $dbs")
+        } catch (t: Throwable) {
+            log("databaseList err: ${t.message}")
+        }
+
+        val targetAct = act ?: lastActivityRef
+        if (targetAct != null) {
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    val webViews = mutableListOf<WebView>()
+                    fun findWebViews(v: View?) {
+                        if (v == null) return
+                        if (v is WebView) {
+                            webViews.add(v)
+                        } else if (v is ViewGroup) {
+                            for (i in 0 until v.childCount) findWebViews(v.getChildAt(i))
+                        }
+                    }
+                    findWebViews(targetAct.window?.decorView)
+                    log("Found WebViews: ${webViews.size}")
+                    webViews.forEachIndexed { idx, wv ->
+                        val js = """
+                            (function(){
+                              try {
+                                var ls = {};
+                                for (var i = 0; i < localStorage.length; i++) {
+                                  var k = localStorage.key(i);
+                                  ls[k] = String(localStorage.getItem(k)).slice(0, 80);
+                                }
+                                return JSON.stringify({url: location.href, lsKeys: Object.keys(ls), ls: ls});
+                              } catch(e) { return "err:" + e; }
+                            })()
+                        """.trimIndent()
+                        wv.evaluateJavascript(js) { res ->
+                            log("LS[$idx] -> ${res?.take(300)}")
+                        }
+                    }
+                } catch (t: Throwable) {
+                    log("WebView LS dump err: ${t.message}")
+                }
+            }
         }
     }
 
@@ -293,6 +343,7 @@ class JpwHook : IXposedHookLoadPackage {
             extractWebViewCookies()
             loadCookies(ctx)
             dumpAppPrefs(ctx.applicationContext)
+            dumpDatabasesAndStorage(ctx.applicationContext, ctx as? Activity)
 
             val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val savedPass = prefs.getString("password", "") ?: ""
