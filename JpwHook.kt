@@ -31,6 +31,7 @@ import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.io.File
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -139,6 +140,7 @@ class JpwHook : IXposedHookLoadPackage {
             val cm = CookieManager.getInstance()
             val rawCookies = cm.getCookie("https://jpw.jio.com") ?: ""
             if (rawCookies.isNotEmpty()) {
+                log("WebView raw cookies -> ${rawCookies.take(220)}")
                 rawCookies.split(";").forEach {
                     val p = it.split("=", limit = 2)
                     if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
@@ -146,6 +148,31 @@ class JpwHook : IXposedHookLoadPackage {
             }
         } catch (t: Throwable) {
             log("extractWebViewCookies error: ${t.message}")
+        }
+    }
+
+    private fun dumpAppPrefs(ctx: Context) {
+        try {
+            val prefsDir = File(ctx.applicationInfo.dataDir, "shared_prefs")
+            val files = prefsDir.listFiles()?.filter { it.extension == "xml" } ?: emptyList()
+            log("Prefs files (${files.size}): ${files.map { it.nameWithoutExtension }}")
+            for (f in files) {
+                val name = f.nameWithoutExtension
+                if (name == PREF_NAME) continue
+                val map = ctx.getSharedPreferences(name, Context.MODE_PRIVATE).all
+                if (map.isEmpty()) continue
+                val interesting = map.entries.joinToString(", ") { (k, v) ->
+                    val safeVal = if (k.contains("pass", true) || k.contains("pwd", true) || k.contains("otp", true) || k.contains("pin", true)) {
+                        "***"
+                    } else {
+                        v.toString().take(80)
+                    }
+                    "$k=$safeVal"
+                }
+                log("SP[$name] -> $interesting")
+            }
+        } catch (t: Throwable) {
+            log("dumpAppPrefs err: ${t.message}")
         }
     }
 
@@ -265,6 +292,7 @@ class JpwHook : IXposedHookLoadPackage {
             log("onAutoReachClicked entered | ctx=${ctx.javaClass.name} | isActivity=${ctx is Activity}")
             extractWebViewCookies()
             loadCookies(ctx)
+            dumpAppPrefs(ctx.applicationContext)
 
             val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val savedPass = prefs.getString("password", "") ?: ""
