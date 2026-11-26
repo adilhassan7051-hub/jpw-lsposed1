@@ -78,7 +78,6 @@ class JpwHook : IXposedHookLoadPackage {
         bypassDeveloperSettings()
         bypassRootBeer(cl)
         bypassAppSecurityModule(cl)
-        bypassOtpFlow(cl)
         hookAnyActivityResume(cl)
         bypassSimVerification(cl)
         bypassSignatureAndIntegrity(cl)
@@ -260,8 +259,7 @@ class JpwHook : IXposedHookLoadPackage {
         val kw = listOf(
             "isRoot", "checkRoot", "isMock", "checkMock",
             "isDevelop", "checkDevelop", "isEmulator", "checkEmulator",
-            "isDebugger", "checkDebugger", "verifyOtp", "isOtpRequired",
-            "needOtp", "isVerified", "checkOtp", "otp"
+            "isDebugger", "checkDebugger"
         )
         for (clsName in listOf("com.jio.jpss.AppSecurityModule", "com.jio.jpss.AppSecurityModule\$Companion")) {
             try {
@@ -271,13 +269,7 @@ class JpwHook : IXposedHookLoadPackage {
                     if (kw.none { m.name.contains(it, ignoreCase = true) }) return@forEach
                     try {
                         val rep = when (m.returnType) {
-                            Boolean::class.javaPrimitiveType -> {
-                                if (m.name.contains("verify", true) || m.name.contains("isVerified", true)) {
-                                    XC_MethodReplacement.returnConstant(true)
-                                } else {
-                                    XC_MethodReplacement.returnConstant(false)
-                                }
-                            }
+                            Boolean::class.javaPrimitiveType -> XC_MethodReplacement.returnConstant(false)
                             Int::class.javaPrimitiveType -> XC_MethodReplacement.returnConstant(0)
                             String::class.java -> XC_MethodReplacement.returnConstant("")
                             else -> XC_MethodReplacement.returnConstant(null)
@@ -290,36 +282,6 @@ class JpwHook : IXposedHookLoadPackage {
                 }
             } catch (t: Throwable) {
                 log("AppSecurityModule not found ($clsName): ${t.message}")
-            }
-        }
-    }
-
-    private fun bypassOtpFlow(cl: ClassLoader) {
-        val otpClasses = listOf(
-            "com.jio.jpss.asynctask.SendOtp",
-            "com.jio.jpss.asynctask.VerifyOtp"
-        )
-        for (clsName in otpClasses) {
-            try {
-                val clazz = XposedHelpers.findClass(clsName, cl)
-                log("Found OTP class: $clsName")
-                clazz.declaredMethods.forEach { m ->
-                    if (m.name == "doInBackground") {
-                        try {
-                            XposedBridge.hookMethod(m, object : XC_MethodReplacement() {
-                                override fun replaceHookedMethod(p: MethodHookParam): Any? {
-                                    log("OTP bypass triggered on $clsName.${m.name}")
-                                    return """{"IsSuccessful":true,"Status":"VERIFIED","Message":"OK"}"""
-                                }
-                            })
-                            log("Hooked $clsName.doInBackground")
-                        } catch (hookErr: Throwable) {
-                            log("OTP hook err on $clsName: ${hookErr.message}")
-                        }
-                    }
-                }
-            } catch (tErr: Throwable) {
-                log("OTP class not found ($clsName): ${tErr.message}")
             }
         }
     }
