@@ -99,19 +99,27 @@ class JpwHook : IXposedHookLoadPackage {
             log("Found AndroidReactUtils for SIM Auth hook")
 
             // 1. startSimAuth(String userId, String cliList, Promise promise)
-            // Khali/non-status promises par status JSON force nahi karte
             reactUtilsClass.declaredMethods.filter { it.name == "startSimAuth" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
                         val userId = p.args.getOrNull(0)
                         val cliList = p.args.getOrNull(1)
+                        val promiseObj = p.args.getOrNull(2)
                         log("SIM_HOOK blocked startSimAuth -> userId=$userId | cliList=$cliList")
+                        if (promiseObj != null) {
+                            try {
+                                XposedHelpers.callMethod(promiseObj, "resolve", """{"status" :"true"}""")
+                                log("SIM_HOOK resolved startSimAuth Promise with true")
+                            } catch (t: Throwable) {
+                                log("SIM_HOOK startSimAuth promise err: ${t.message}")
+                            }
+                        }
                         p.result = null
                     }
                 })
             }
 
-            // 2. startSMSListener(...) -> block SMS retriever / OTP send without corrupting other promises
+            // 2. startSMSListener(...) -> block SMS retriever / OTP send
             reactUtilsClass.declaredMethods.filter { it.name == "startSMSListener" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
