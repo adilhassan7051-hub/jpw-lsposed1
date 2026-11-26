@@ -87,14 +87,10 @@ class JpwHook : IXposedHookLoadPackage {
         hookHttpCookieCapture(cl)
     }
 
-    private fun resolvePromiseTrue(promiseObj: Any?) {
-        if (promiseObj == null) return
-        try {
-            XposedHelpers.callMethod(promiseObj, "resolve", """{"status" :"true"}""")
-            log("SIM_HOOK resolved Promise with true")
-        } catch (t: Throwable) {
-            log("SIM_HOOK promise resolve err: ${t.message}")
-        }
+    private fun isFalseSimAuthStatus(resVal: String): Boolean {
+        if (resVal.isEmpty()) return false
+        return resVal.contains("\"status\"") &&
+            (resVal.contains("\"status\" :\"false\"") || resVal.contains("\"status\":\"false\""))
     }
 
     private fun hookSimAuthReactBridge(cl: ClassLoader) {
@@ -102,48 +98,47 @@ class JpwHook : IXposedHookLoadPackage {
             val reactUtilsClass = XposedHelpers.findClass("com.jio.jpss.AndroidReactUtils", cl)
             log("Found AndroidReactUtils for SIM Auth hook")
 
-            // 1. startSimAuth(String userId, String cliList, Promise promise) -> block original SMS/OTP start & resolve true
+            // 1. startSimAuth(String userId, String cliList, Promise promise)
+            // Khali/non-status promises par status JSON force nahi karte
             reactUtilsClass.declaredMethods.filter { it.name == "startSimAuth" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
                         val userId = p.args.getOrNull(0)
                         val cliList = p.args.getOrNull(1)
-                        val promiseObj = p.args.getOrNull(2)
                         log("SIM_HOOK blocked startSimAuth -> userId=$userId | cliList=$cliList")
-                        resolvePromiseTrue(promiseObj)
                         p.result = null
                     }
                 })
             }
 
-            // 2. startSMSListener(...) -> block SMS retriever / OTP send
+            // 2. startSMSListener(...) -> block SMS retriever / OTP send without corrupting other promises
             reactUtilsClass.declaredMethods.filter { it.name == "startSMSListener" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
-                        val promiseObj = p.args.getOrNull(2)
                         log("SIM_HOOK blocked startSMSListener")
-                        resolvePromiseTrue(promiseObj)
                         p.result = null
                     }
                 })
             }
 
-            // 3. getSimAuthStatus(String json, Promise promise) -> force true
+            // 3. getSimAuthStatus(String json, Promise promise) -> sirf explicit false status ko true karein
+            val hookedPromiseClasses = ConcurrentHashMap.newKeySet<Class<*>>()
             reactUtilsClass.declaredMethods.filter { it.name == "getSimAuthStatus" }.forEach { m ->
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(p: MethodHookParam) {
                         val arg0 = p.args.getOrNull(0)
                         val promiseObj = p.args.getOrNull(1)
                         log("SIM_HOOK getSimAuthStatus called -> arg0=$arg0 | promise=${promiseObj?.javaClass?.name}")
-                        if (promiseObj != null) {
+                        if (promiseObj != null && hookedPromiseClasses.add(promiseObj.javaClass)) {
                             try {
                                 XposedBridge.hookAllMethods(promiseObj.javaClass, "resolve", object : XC_MethodHook() {
                                     override fun beforeHookedMethod(rp: MethodHookParam) {
-                                        val resVal = rp.args.firstOrNull()?.toString() ?: ""
-                                        log("SIM_HOOK getSimAuthStatus resolve -> $resVal")
-                                        if (resVal.contains("\"status\" :\"false\"") || resVal.contains("\"status\":\"false\"") || resVal.isEmpty()) {
+                                        val firstArg = rp.args.firstOrNull() ?: return
+                                        val resVal = firstArg.toString()
+                                        log("SIM_HOOK getSimAuthStatus resolve -> ${resVal.take(160)}")
+                                        if (isFalseSimAuthStatus(resVal)) {
                                             rp.args[0] = """{"status" :"true"}"""
-                                            log("SIM_HOOK forced getSimAuthStatus resolve to true")
+                                            log("SIM_HOOK forced false getSimAuthStatus resolve to true")
                                         }
                                     }
                                 })
