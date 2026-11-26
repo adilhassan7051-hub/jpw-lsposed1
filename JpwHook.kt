@@ -563,6 +563,35 @@ class JpwHook : IXposedHookLoadPackage {
 
     private fun hookHttpCookieCapture(cl: ClassLoader) {
         try {
+            val okHttpClientCls = XposedHelpers.findClass("okhttp3.OkHttpClient", cl)
+            XposedBridge.hookAllMethods(okHttpClientCls, "newCall", object : XC_MethodHook() {
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    try {
+                        val req = p.args.firstOrNull() ?: return
+                        val urlObj = XposedHelpers.callMethod(req, "url")
+                        val urlStr = urlObj?.toString() ?: ""
+                        if (urlStr.contains("GetWorkOrderList") || urlStr.contains("UpdateWorkOrder") || urlStr.contains("UserLogin")) {
+                            val headersObj = XposedHelpers.callMethod(req, "headers")
+                            val headerNamesObj = XposedHelpers.callMethod(headersObj, "names") as? Set<*>
+                            val headerMap = linkedMapOf<String, String>()
+                            headerNamesObj?.forEach { nameObj ->
+                                val name = nameObj?.toString() ?: return@forEach
+                                val valStr = XposedHelpers.callMethod(headersObj, "get", name)?.toString() ?: ""
+                                headerMap[name] = valStr
+                                captureHeader(name, valStr)
+                            }
+                            log("Real Req -> $urlStr | headers=$headerMap")
+                        }
+                    } catch (t: Throwable) {
+                        log("newCall inspect err: ${t.message}")
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            log("OkHttpClient hook err: ${t.message}")
+        }
+
+        try {
             val reqBuilderCls = XposedHelpers.findClass("okhttp3.Request\$Builder", cl)
             for (mName in listOf("addHeader", "header")) {
                 XposedHelpers.findAndHookMethod(reqBuilderCls, mName, String::class.java, String::class.java, object : XC_MethodHook() {
@@ -581,12 +610,20 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             })
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("Request.Builder hook err: ${t.message}")
+        }
+
         try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "setRequestProperty", object : XC_MethodHook() {
-                override fun beforeHookedMethod(p: MethodHookParam) { captureHeader(p.args.getOrNull(0) as? String ?: return, p.args.getOrNull(1) as? String ?: return) }
+                override fun beforeHookedMethod(p: MethodHookParam) {
+                    captureHeader(p.args.getOrNull(0) as? String ?: return, p.args.getOrNull(1) as? String ?: return)
+                }
             })
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("URLConnection setRequestProperty err: ${t.message}")
+        }
+
         try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "getHeaderField", object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
@@ -601,7 +638,10 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             })
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("URLConnection getHeaderField err: ${t.message}")
+        }
+
         try {
             XposedBridge.hookAllMethods(XposedHelpers.findClass("okhttp3.CookieJar", cl), "saveFromResponse", object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
@@ -621,7 +661,9 @@ class JpwHook : IXposedHookLoadPackage {
                     saveCookies(appContextRef)
                 }
             })
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("CookieJar hook err: ${t.message}")
+        }
     }
 
     private fun captureHeader(name: String, value: String) {
