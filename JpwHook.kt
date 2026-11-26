@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.location.Location
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -27,6 +26,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.TreeMap
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import org.json.JSONArray
@@ -37,12 +37,13 @@ class JpwHook : IXposedHookLoadPackage {
     companion object {
         private const val TAG = "JpwHook"
         private const val TARGET_PKG = "com.jio.jpss"
-        private fun log(s: String) = XposedBridge.log("[$TAG]$s")
+        private fun log(s: String) = XposedBridge.log("[$TAG] $s")
     }
 
     private var capturedAuthHeader: String = ""
     private var capturedJioCenterId: String = ""
     private val sessionCookies = mutableMapOf<String, String>()
+    private val registeredReceivers = ConcurrentHashMap.newKeySet<String>()
 
     private val REACH_URL = "https://jpw.jio.com/lco/api/workorder-maintenance/WorkOrder/UpdateWorkOrder"
     private val WO_URL = "https://jpw.jio.com/lco/api/workorder-inquiry/WorkOrder/GetWorkOrderList"
@@ -56,17 +57,68 @@ class JpwHook : IXposedHookLoadPackage {
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != TARGET_PKG) return
+        log("Loaded target package: ${lpparam.packageName} (process: ${lpparam.processName})")
         val cl = lpparam.classLoader
         bypassMockLocation()
         bypassDeveloperSettings()
         bypassRootBeer(cl)
         bypassAppSecurityModule(cl)
         bypassOtpFlow(cl)
-        injectAutoReachButton(cl)
+        hookAnyActivityResume(cl)
         bypassSimVerification(cl)
         bypassSignatureAndIntegrity(cl)
         hookHttpCookieCapture(cl)
-        registerBroadcastTrigger(cl)
+    }
+
+    private fun hookAnyActivityResume(cl: ClassLoader) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity::class.java,
+                "onResume",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(p: MethodHookParam) {
+                        val activity = p.thisObject as? Activity ?: return
+                        log("Activity resumed: ${activity.javaClass.name}")
+                        addFab(activity)
+                        ensureBroadcastReceiver(activity.applicationContext)
+                    }
+                }
+            )
+            log("Hooked Activity.onResume successfully")
+        } catch (t: Throwable) {
+            log("Failed to hook Activity.onResume: ${t.message}")
+        }
+    }
+
+    private fun ensureBroadcastReceiver(appCtx: Context?) {
+        if (appCtx == null) return
+        val key = appCtx.packageName
+        if (!registeredReceivers.add(key)) return
+        try {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val techId = intent?.getStringExtra("techId") ?: return
+                    val password = intent?.getStringExtra("password") ?: return
+                    log("Broadcast received for techId=$techId")
+                    sessionCookies.clear()
+                    appCtx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+                        .putString("technician_id", techId)
+                        .putString("password", password)
+                        .apply()
+                    Thread { autoReach(appCtx) }.start()
+                }
+            }
+            val filter = IntentFilter("com.jpwreach.TRIGGER_REACH")
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                appCtx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                appCtx.registerReceiver(receiver, filter)
+            }
+            log("BroadcastReceiver registered")
+        } catch (t: Throwable) {
+            registeredReceivers.remove(key)
+            log("BroadcastReceiver error: ${t.message}")
+        }
     }
 
     private fun extractWebViewCookies() {
@@ -79,12 +131,14 @@ class JpwHook : IXposedHookLoadPackage {
                     if (p.size == 2) sessionCookies[p[0].trim()] = p[1].trim()
                 }
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("extractWebViewCookies error: ${t.message}")
+        }
     }
 
     private fun bypassMockLocation() {
-        try { XposedHelpers.findAndHookMethod(Location::class.java, "isFromMockProvider", XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
-        try { XposedHelpers.findAndHookMethod(Location::class.java, "isMock", XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
+        try { XposedHelpers.findAndHookMethod(Location::class.java, "isFromMockProvider", XC_MethodReplacement.returnConstant(false)) } catch (t: Throwable) { log("isFromMockProvider: ${t.message}") }
+        try { XposedHelpers.findAndHookMethod(Location::class.java, "isMock", XC_MethodReplacement.returnConstant(false)) } catch (t: Throwable) { log("isMock: ${t.message}") }
         val hook = object : XC_MethodHook() {
             override fun beforeHookedMethod(p: MethodHookParam) {
                 val k = p.args[1] as String?
@@ -113,9 +167,13 @@ class JpwHook : IXposedHookLoadPackage {
         for (clsName in listOf("com.scottyab.rootbeer.RootBeer", "com.scottyab.rootbeer.RootBeerNative")) {
             try {
                 XposedHelpers.findClass(clsName, cl).declaredMethods.forEach { m ->
-                    if (m.returnType == Boolean::class.javaPrimitiveType) try { XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
+                    if (m.returnType == Boolean::class.javaPrimitiveType) {
+                        try { XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(false)) } catch (_: Throwable) {}
+                    }
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+                log("RootBeer class not found ($clsName): ${t.message}")
+            }
         }
     }
 
@@ -135,7 +193,9 @@ class JpwHook : IXposedHookLoadPackage {
                         XposedBridge.hookMethod(m, rep)
                     } catch (_: Throwable) {}
                 }
-            } catch (_: Throwable) {}
+            } catch (t: Throwable) {
+                log("AppSecurityModule not found ($clsName): ${t.message}")
+            }
         }
     }
 
@@ -143,28 +203,23 @@ class JpwHook : IXposedHookLoadPackage {
         for (t in listOf("com.jio.jpss.asynctask.SendOtp", "com.jio.jpss.asynctask.VerifyOtp")) {
             try {
                 XposedHelpers.findClass(t, cl).declaredMethods.forEach { m ->
-                    if (m.name == "doInBackground") try {
-                        XposedBridge.hookMethod(m, object : XC_MethodReplacement() {
-                            override fun replaceHookedMethod(p: MethodHookParam): Any? = """{"IsSuccessful":true,"Status":"VERIFIED","Message":"OK"}"""
-                        })
-                    } catch (_: Throwable) {}
+                    if (m.name == "doInBackground") {
+                        try {
+                            XposedBridge.hookMethod(m, object : XC_MethodReplacement() {
+                                override fun replaceHookedMethod(p: MethodHookParam): Any? = """{"IsSuccessful":true,"Status":"VERIFIED","Message":"OK"}"""
+                            })
+                        } catch (_: Throwable) {}
+                    }
                 }
-            } catch (_: Throwable) {}
+            } catch (tErr: Throwable) {
+                log("OTP class not found ($t): ${tErr.message}")
+            }
         }
-    }
-
-    private fun injectAutoReachButton(cl: ClassLoader) {
-        try {
-            val mainCls = XposedHelpers.findClass("com.jio.jpss.MainActivity", cl)
-            XposedHelpers.findAndHookMethod(mainCls, "onCreate", Bundle::class.java, object : XC_MethodHook() {
-                override fun afterHookedMethod(p: MethodHookParam) { addFab(p.thisObject as Activity) }
-            })
-        } catch (_: Throwable) {}
     }
 
     private fun addFab(activity: Activity) {
         try {
-            activity.window.decorView.post {
+            activity.window?.decorView?.post {
                 val root = activity.findViewById<FrameLayout>(android.R.id.content)
                 if (root == null || root.findViewWithTag<View>("jpw_auto_reach_fab") != null) return@post
                 val ctx = activity
@@ -184,8 +239,11 @@ class JpwHook : IXposedHookLoadPackage {
                     bottomMargin = dp(ctx, 24)
                 }
                 root.addView(fab, lp)
+                log("FAB added on ${activity.javaClass.simpleName}")
             }
-        } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            log("addFab error: ${t.message}")
+        }
     }
 
     private fun onAutoReachClicked(ctx: Context) {
@@ -497,34 +555,4 @@ class JpwHook : IXposedHookLoadPackage {
         else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) capturedAuthHeader = value
         else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) capturedJioCenterId = value
     }
-
-        private fun registerBroadcastTrigger(cl: ClassLoader) {
-        try {
-            val mainCls = XposedHelpers.findClass("com.jio.jpss.MainActivity", cl)
-            XposedHelpers.findAndHookMethod(mainCls, "onCreate", Bundle::class.java, object : XC_MethodHook() {
-                override fun afterHookedMethod(p: MethodHookParam) {
-                    val ctx = (p.thisObject as Activity).applicationContext
-                    val receiver = object : BroadcastReceiver() {
-                        override fun onReceive(context: Context?, intent: Intent?) {
-                            val techId = intent?.getStringExtra("techId") ?: return
-                            val password = intent?.getStringExtra("password") ?: return
-                            sessionCookies.clear()
-                            ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
-                                .putString("technician_id", techId)
-                                .putString("password", password)
-                                .apply()
-                            Thread { autoReach(ctx) }.start()
-                        }
-                    }
-                    val filter = IntentFilter("com.jpwreach.TRIGGER_REACH")
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                        ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-                    } else {
-                        ctx.registerReceiver(receiver, filter)
-                    }
-                                }
-            })
-        } catch (_: Throwable) {}
-    }
 }
-// END_OF_FILE
