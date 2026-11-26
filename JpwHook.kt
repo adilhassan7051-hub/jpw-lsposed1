@@ -158,7 +158,7 @@ class JpwHook : IXposedHookLoadPackage {
         try {
             val prefsDir = File(ctx.applicationInfo.dataDir, "shared_prefs")
             val files = prefsDir.listFiles()?.filter { it.extension == "xml" } ?: emptyList()
-            log("Prefs files (${files.size}): ${files.map { it.nameWithoutExtension }}")
+            log("Prefs files (${files.size}):${files.map { it.nameWithoutExtension }}")
             for (f in files) {
                 val name = f.nameWithoutExtension
                 if (name == PREF_NAME) continue
@@ -172,7 +172,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                     "$k=$safeVal"
                 }
-                log("SP[$name] -> $interesting")
+                log("SP[$name] ->$interesting")
             }
         } catch (t: Throwable) {
             log("dumpAppPrefs err: ${t.message}")
@@ -182,7 +182,7 @@ class JpwHook : IXposedHookLoadPackage {
     private fun dumpDatabasesAndStorage(ctx: Context, act: Activity?) {
         try {
             val dbs = ctx.databaseList()?.toList() ?: emptyList()
-            log("DBs (${dbs.size}): $dbs")
+            log("DBs (${dbs.size}):$dbs")
         } catch (t: Throwable) {
             log("databaseList err: ${t.message}")
         }
@@ -216,7 +216,7 @@ class JpwHook : IXposedHookLoadPackage {
                             })()
                         """.trimIndent()
                         wv.evaluateJavascript(js) { res ->
-                            log("LS[$idx] -> ${res?.take(300)}")
+                            log("LS[$idx] ->${res?.take(300)}")
                         }
                     }
                 } catch (t: Throwable) {
@@ -262,47 +262,75 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             } catch (t: Throwable) {
-                log("RootBeer class not found ($clsName): ${t.message}")
+                log("RootBeer class not found ($clsName):${t.message}")
             }
         }
     }
 
     private fun bypassAppSecurityModule(cl: ClassLoader) {
-        val kw = listOf("isRoot", "checkRoot", "isMock", "checkMock", "isDevelop", "checkDevelop", "isEmulator", "checkEmulator", "isDebugger", "checkDebugger", "verifyOtp", "isOtpRequired", "needOtp", "isVerified", "checkOtp")
+        val kw = listOf(
+            "isRoot", "checkRoot", "isMock", "checkMock",
+            "isDevelop", "checkDevelop", "isEmulator", "checkEmulator",
+            "isDebugger", "checkDebugger", "verifyOtp", "isOtpRequired",
+            "needOtp", "isVerified", "checkOtp", "otp"
+        )
         for (clsName in listOf("com.jio.jpss.AppSecurityModule", "com.jio.jpss.AppSecurityModule\$Companion")) {
             try {
-                XposedHelpers.findClass(clsName, cl).declaredMethods.forEach { m ->
+                val clazz = XposedHelpers.findClass(clsName, cl)
+                log("Found class: $clsName")
+                clazz.declaredMethods.forEach { m ->
                     if (kw.none { m.name.contains(it, ignoreCase = true) }) return@forEach
                     try {
                         val rep = when (m.returnType) {
-                            Boolean::class.javaPrimitiveType -> if (m.name.contains("verify", true) || m.name.contains("isVerified", true)) XC_MethodReplacement.returnConstant(true) else XC_MethodReplacement.returnConstant(false)
+                            Boolean::class.javaPrimitiveType -> {
+                                if (m.name.contains("verify", true) || m.name.contains("isVerified", true)) {
+                                    XC_MethodReplacement.returnConstant(true)
+                                } else {
+                                    XC_MethodReplacement.returnConstant(false)
+                                }
+                            }
                             Int::class.javaPrimitiveType -> XC_MethodReplacement.returnConstant(0)
                             String::class.java -> XC_MethodReplacement.returnConstant("")
                             else -> XC_MethodReplacement.returnConstant(null)
                         }
                         XposedBridge.hookMethod(m, rep)
-                    } catch (_: Throwable) {}
+                        log("Hooked AppSecurityModule method: ${m.name}")
+                    } catch (hookErr: Throwable) {
+                        log("Hook err on ${m.name}:${hookErr.message}")
+                    }
                 }
             } catch (t: Throwable) {
-                log("AppSecurityModule not found ($clsName): ${t.message}")
+                log("AppSecurityModule not found ($clsName):${t.message}")
             }
         }
     }
 
     private fun bypassOtpFlow(cl: ClassLoader) {
-        for (t in listOf("com.jio.jpss.asynctask.SendOtp", "com.jio.jpss.asynctask.VerifyOtp")) {
+        val otpClasses = listOf(
+            "com.jio.jpss.asynctask.SendOtp",
+            "com.jio.jpss.asynctask.VerifyOtp"
+        )
+        for (clsName in otpClasses) {
             try {
-                XposedHelpers.findClass(t, cl).declaredMethods.forEach { m ->
+                val clazz = XposedHelpers.findClass(clsName, cl)
+                log("Found OTP class: $clsName")
+                clazz.declaredMethods.forEach { m ->
                     if (m.name == "doInBackground") {
                         try {
                             XposedBridge.hookMethod(m, object : XC_MethodReplacement() {
-                                override fun replaceHookedMethod(p: MethodHookParam): Any? = """{"IsSuccessful":true,"Status":"VERIFIED","Message":"OK"}"""
+                                override fun replaceHookedMethod(p: MethodHookParam): Any? {
+                                    log("OTP bypass triggered on $clsName.${m.name}")
+                                    return """{"IsSuccessful":true,"Status":"VERIFIED","Message":"OK"}"""
+                                }
                             })
-                        } catch (_: Throwable) {}
+                            log("Hooked $clsName.doInBackground")
+                        } catch (hookErr: Throwable) {
+                            log("OTP hook err on $clsName:${hookErr.message}")
+                        }
                     }
                 }
             } catch (tErr: Throwable) {
-                log("OTP class not found ($t): ${tErr.message}")
+                log("OTP class not found ($clsName):${tErr.message}")
             }
         }
     }
@@ -502,7 +530,7 @@ class JpwHook : IXposedHookLoadPackage {
                 if (JSONObject(httpPostNoSig(REACH_URL, bodyStr, reachHeaders)).optBoolean("IsSuccessful", false)) success++ else fail++
             } catch (_: Exception) { fail++ }
         }
-        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of $total")
+        showToast(ctx, "Done! REACHED: $success, Failed: $fail out of$total")
     }
 
     private fun doLogin(ctx: Context, techId: String, techPass: String): Boolean {
@@ -747,14 +775,4 @@ class JpwHook : IXposedHookLoadPackage {
         } else if (name.equals("Authorization", ignoreCase = true) && value.isNotEmpty()) {
             capturedAuthHeader = value
             saveCookies(appContextRef)
-        } else if (name.equals("X-JioCenterId", ignoreCase = true) && value.isNotEmpty()) {
-            capturedJioCenterId = value
-            saveCookies(appContextRef)
-        } else if (name.startsWith("X-", ignoreCase = true) && value.isNotEmpty()) {
-            extraCapturedHeaders[name] = value
-            if (name.contains("Sig", ignoreCase = true) || name.contains("Token", ignoreCase = true) || name.contains("Auth", ignoreCase = true)) {
-                log("Captured header -> $name=${value.take(24)}...")
-            }
-        }
-    }
-}
+        } else if (name.equals("X-JioCenterId
