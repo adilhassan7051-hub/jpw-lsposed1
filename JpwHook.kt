@@ -249,9 +249,6 @@ class JpwHook : IXposedHookLoadPackage {
     private fun onAutoReachClicked(ctx: Context) {
         extractWebViewCookies()
         loadCookies(ctx)
-        sessionCookies.clear()
-capturedAuthHeader = ""
-ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit().clear().apply()
 
         val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val savedPass = prefs.getString("password", "") ?: ""
