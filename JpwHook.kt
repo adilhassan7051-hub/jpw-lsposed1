@@ -1,19 +1,27 @@
 package com.jpwreach.lsposed
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.location.Location
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.webkit.CookieManager
+import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.Toast
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -112,7 +120,7 @@ class JpwHook : IXposedHookLoadPackage {
                 }
             }
             val filter = IntentFilter("com.jpwreach.TRIGGER_REACH")
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 appCtx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 appCtx.registerReceiver(receiver, filter)
@@ -226,9 +234,9 @@ class JpwHook : IXposedHookLoadPackage {
                 val root = activity.findViewById<FrameLayout>(android.R.id.content)
                 if (root == null || root.findViewWithTag<View>("jpw_auto_reach_fab") != null) return@post
                 val ctx = activity
-                val fab = android.widget.Button(ctx).apply {
+                val fab = Button(ctx).apply {
                     text = "⚡ AUTO-REACH"
-                    setTextColor(android.graphics.Color.WHITE)
+                    setTextColor(Color.WHITE)
                     textSize = 13f
                     setPadding(dp(ctx, 16), dp(ctx, 10), dp(ctx, 16), dp(ctx, 10))
                     background = makeRedGradient(ctx)
@@ -250,58 +258,62 @@ class JpwHook : IXposedHookLoadPackage {
     }
 
     private fun onAutoReachClicked(ctx: Context) {
-        appContextRef = ctx.applicationContext
-        extractWebViewCookies()
-        loadCookies(ctx)
+        try {
+            appContextRef = ctx.applicationContext
+            log("onAutoReachClicked entered | ctx=${ctx.javaClass.name} | isActivity=${ctx is Activity}")
+            extractWebViewCookies()
+            loadCookies(ctx)
 
-        val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        val savedPass = prefs.getString("password", "") ?: ""
-        val savedTechId = prefs.getString("technician_id", "") ?: ""
+            val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            val savedPass = prefs.getString("password", "") ?: ""
+            val savedTechId = prefs.getString("technician_id", "") ?: ""
 
-        if (sessionCookies.isNotEmpty() || capturedAuthHeader.isNotEmpty()) {
-            Thread { autoReach(ctx) }.start()
-            return
-        }
-
-        if (ctx is Activity) {
-            val lp = android.widget.LinearLayout(ctx).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding(48, 24, 48, 16)
-            }
-            val techIdField = android.widget.EditText(ctx).apply {
-                hint = "Enter Technician ID"
-                if (savedTechId.isNotEmpty()) setText(savedTechId)
-            }
-            val passField = android.widget.EditText(ctx).apply {
-                hint = "Enter JPW password"
-                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                if (savedPass.isNotEmpty()) setText(savedPass)
-            }
-            lp.addView(techIdField)
-            lp.addView(passField)
-
-            android.app.AlertDialog.Builder(ctx)
-                .setTitle("Login Required")
-                .setMessage("Enter Technician ID and JPW password:")
-                .setView(lp)
-                .setNegativeButton("CANCEL", null)
-                .setPositiveButton("SAVE & RUN") { _, _ ->
-                    val tid = techIdField.text.toString().trim()
-                    val pwd = passField.text.toString().trim()
-                    if (tid.isNotEmpty() && pwd.isNotEmpty()) {
-                        prefs.edit().putString("technician_id", tid).putString("password", pwd).apply()
-                        Thread {
-                            if (doLogin(ctx, tid, pwd)) {
-                                autoReach(ctx)
-                            } else {
-                                showToast(ctx, "No session — login failed or missing. Check credentials.")
-                            }
-                        }.start()
-                    } else {
-                        showToast(ctx, "Enter both Technician ID and Password")
-                    }
+            val targetActivity = ctx as? Activity
+            if (targetActivity != null && !targetActivity.isFinishing && !targetActivity.isDestroyed) {
+                val lp = LinearLayout(targetActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(48, 24, 48, 16)
                 }
-                .show()
+                val techIdField = EditText(targetActivity).apply {
+                    hint = "Enter Technician ID"
+                    if (savedTechId.isNotEmpty()) setText(savedTechId)
+                }
+                val passField = EditText(targetActivity).apply {
+                    hint = "Enter JPW password"
+                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    if (savedPass.isNotEmpty()) setText(savedPass)
+                }
+                lp.addView(techIdField)
+                lp.addView(passField)
+
+                AlertDialog.Builder(targetActivity)
+                    .setTitle("Login Required")
+                    .setMessage("Enter Technician ID and JPW password:")
+                    .setView(lp)
+                    .setNegativeButton("CANCEL", null)
+                    .setPositiveButton("SAVE & RUN") { _, _ ->
+                        val tid = techIdField.text.toString().trim()
+                        val pwd = passField.text.toString().trim()
+                        if (tid.isNotEmpty() && pwd.isNotEmpty()) {
+                            prefs.edit().putString("technician_id", tid).putString("password", pwd).apply()
+                            Thread {
+                                if (doLogin(ctx, tid, pwd)) {
+                                    autoReach(ctx)
+                                } else {
+                                    showToast(ctx, "No session — login failed or missing. Check credentials.")
+                                }
+                            }.start()
+                        } else {
+                            showToast(ctx, "Enter both Technician ID and Password")
+                        }
+                    }
+                    .show()
+            } else {
+                log("No valid Activity context to show dialog; running autoReach directly")
+                Thread { autoReach(ctx) }.start()
+            }
+        } catch (t: Throwable) {
+            log("onAutoReachClicked error: ${t.message}")
         }
     }
 
@@ -314,6 +326,8 @@ class JpwHook : IXposedHookLoadPackage {
         val prefs = ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val jioCenterId = capturedJioCenterId.ifEmpty { prefs.getString("saved_center", "") ?: "" }
         val techId = prefs.getString("technician_id", "") ?: ""
+
+        log("DEBUG autoReach -> techId='$techId' | center='$jioCenterId' | cookies=${sessionCookies.keys} | authPresent=${capturedAuthHeader.isNotEmpty()}")
 
         if (sessionCookies.isEmpty() && capturedAuthHeader.isEmpty() && techId.isNotEmpty()) {
             val techPass = prefs.getString("password", "") ?: ""
@@ -492,7 +506,9 @@ class JpwHook : IXposedHookLoadPackage {
         extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
 
         OutputStreamWriter(conn.outputStream).use { it.write(body) }
+        val code = try { conn.responseCode } catch (_: Exception) { -1 }
         val responseBody = try { conn.inputStream.bufferedReader().readText() } catch (_: Exception) { conn.errorStream?.bufferedReader()?.readText() ?: "" }
+        log("HTTP POST $urlStr -> code=$code | len=${responseBody.length}")
         conn.headerFields?.forEach { (key, values) ->
             if (key != null && key.equals("Set-Cookie", ignoreCase = true)) values.forEach {
                 val p = it.split(";")[0].split("=", limit = 2)
@@ -509,8 +525,8 @@ class JpwHook : IXposedHookLoadPackage {
     }
 
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
-    private fun makeRedGradient(ctx: Context) = android.graphics.drawable.GradientDrawable(
-        android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+    private fun makeRedGradient(ctx: Context) = GradientDrawable(
+        GradientDrawable.Orientation.TL_BR,
         intArrayOf(0xFFe60012.toInt(), 0xFFff3a44.toInt())
     ).apply { cornerRadius = dp(ctx, 28).toFloat() }
 
@@ -562,7 +578,7 @@ class JpwHook : IXposedHookLoadPackage {
         try {
             XposedBridge.hookAllMethods(java.net.URLConnection::class.java, "getHeaderField", object : XC_MethodHook() {
                 override fun afterHookedMethod(p: MethodHookParam) {
-                    val conn = p.thisObject as? java.net.HttpURLConnection ?: return
+                    val conn = p.thisObject as? HttpURLConnection ?: return
                     if (conn.url?.toString()?.contains("jpw.jio.com") != true) return
                     if ((p.args.getOrNull(0) as? String)?.equals("Set-Cookie", ignoreCase = true) == true) {
                         val parts = (p.result as? String ?: return).split(";")[0].split("=", limit = 2)
