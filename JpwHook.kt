@@ -332,6 +332,8 @@ class JpwHook : IXposedHookLoadPackage {
         val woHeaders = mutableMapOf("Referer" to "https://jpw.jio.com/v1/workOrderListV3")
         if (jioCenterId.isNotEmpty()) woHeaders["X-JioCenterId"] = jioCenterId
         val woResult = httpPostNoSig(WO_URL, woPayload.toString(), woHeaders)
+        log("WO raw -> result=$woResult")
+
 
         val woJson = try { JSONObject(woResult) } catch (_: Exception) {
             showToast(ctx, "WO fetch failed! Tap Refresh (↻) and try again.")
