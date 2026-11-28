@@ -96,7 +96,17 @@ class JpwHook : IXposedHookLoadPackage {
         return t.contains("under review") ||
             t.contains("captured images") ||
             t.contains("photo error") ||
-            t.contains("capture it again")
+            t.contains("capture it again") ||
+            t.contains("review photos") ||
+            t.contains("wall mounted") ||
+            t.contains("rejected") ||
+            t.contains("upload again") ||
+            t.contains("idu photo") ||
+            t.contains("poe photo") ||
+            t.contains("rmdu photo") ||
+            t.contains("odu photo") ||
+            t.contains("odu light") ||
+            t.contains("serloop")
     }
 
     private fun bypassCapturedImagesReview(cl: ClassLoader) {
@@ -229,7 +239,7 @@ class JpwHook : IXposedHookLoadPackage {
         val js = """
             (function(){
                 try{
-                    var targets = ["under review","captured images","photo error","capture it again"];
+                    var targets = ["under review","captured images","photo error","capture it again","review photos","wall mounted","rejected","upload again","idu photo","poe photo","rmdu photo","odu photo","odu light","serloop"];
                     var all = document.querySelectorAll('*');
                     for(var i=0;i<all.length;i++){
                         var el = all[i];
