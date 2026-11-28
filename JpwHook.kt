@@ -24,6 +24,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import de.robv.android.xposed.IXposedHookLoadPackage
@@ -89,7 +90,36 @@ class JpwHook : IXposedHookLoadPackage {
         bypassCapturedImagesReview(cl)
     }
 
+    private fun isReviewOrPhotoErrorText(raw: String?): Boolean {
+        val t = raw?.trim()?.lowercase().orEmpty()
+        if (t.isEmpty()) return false
+        return t.contains("under review") ||
+            t.contains("captured images") ||
+            t.contains("photo error") ||
+            t.contains("capture it again")
+    }
+
     private fun bypassCapturedImagesReview(cl: ClassLoader) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                TextView::class.java,
+                "setText",
+                CharSequence::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val orig = param.args.getOrNull(0)?.toString()
+                        if (isReviewOrPhotoErrorText(orig)) {
+                            log("REVIEW_BYPASS(1-arg) hiding text: $orig")
+                            param.args[0] = ""
+                            (param.thisObject as? View)?.visibility = View.GONE
+                        }
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            log("REVIEW_BYPASS setText(1-arg) err: ${t.message}")
+        }
+
         try {
             XposedHelpers.findAndHookMethod(
                 TextView::class.java,
@@ -100,9 +130,9 @@ class JpwHook : IXposedHookLoadPackage {
                 Int::class.javaPrimitiveType,
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        val txt = param.args.getOrNull(0)?.toString()?.trim()?.lowercase() ?: return
-                        if (txt.contains("under review") || txt.contains("captured images")) {
-                            log("REVIEW_BYPASS hiding text: ${param.args[0]}")
+                        val orig = param.args.getOrNull(0)?.toString()
+                        if (isReviewOrPhotoErrorText(orig)) {
+                            log("REVIEW_BYPASS(4-arg) hiding text: $orig")
                             param.args[0] = ""
                             (param.thisObject as? View)?.visibility = View.GONE
                         }
@@ -110,7 +140,7 @@ class JpwHook : IXposedHookLoadPackage {
                 }
             )
         } catch (t: Throwable) {
-            log("REVIEW_BYPASS setText hook err: ${t.message}")
+            log("REVIEW_BYPASS setText(4-arg) err: ${t.message}")
         }
 
         try {
@@ -122,7 +152,13 @@ class JpwHook : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val key = (param.args.getOrNull(0) as? String)?.lowercase() ?: return
-                        if (key.contains("underreview") || key.contains("under_review") || key.contains("inreview")) {
+                        if (
+                            key.contains("underreview") ||
+                            key.contains("under_review") ||
+                            key.contains("inreview") ||
+                            key.contains("photoerror") ||
+                            key.contains("photo_error")
+                        ) {
                             log("REVIEW_BYPASS forced $key -> false")
                             param.result = false
                         }
@@ -131,6 +167,87 @@ class JpwHook : IXposedHookLoadPackage {
             )
         } catch (t: Throwable) {
             log("REVIEW_BYPASS optBoolean err: ${t.message}")
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity::class.java,
+                "onResume",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val act = param.thisObject as? Activity ?: return
+                        val decor = act.window?.decorView ?: return
+                        decor.viewTreeObserver?.addOnGlobalLayoutListener {
+                            hideReviewInTree(decor)
+                            hideReviewInWebViews(decor)
+                        }
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            log("REVIEW_BYPASS layout listener err: ${t.message}")
+        }
+    }
+
+    private fun hideReviewInTree(view: View?) {
+        if (view == null) return
+        if (view is TextView) {
+            val txt = view.text?.toString()
+            if (isReviewOrPhotoErrorText(txt)) {
+                log("REVIEW_BYPASS tree hiding TextView: $txt")
+                view.text = ""
+                view.visibility = View.GONE
+                (view.parent as? ViewGroup)?.let { parent ->
+                    for (i in 0 until parent.childCount) {
+                        val child = parent.getChildAt(i)
+                        if (child is ProgressBar) {
+                            child.visibility = View.GONE
+                        }
+                    }
+                }
+            }
+        } else if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                hideReviewInTree(view.getChildAt(i))
+            }
+        }
+    }
+
+    private fun hideReviewInWebViews(root: View?) {
+        if (root == null) return
+        val webViews = mutableListOf<WebView>()
+        fun collect(v: View?) {
+            if (v == null) return
+            if (v is WebView) {
+                webViews.add(v)
+            } else if (v is ViewGroup) {
+                for (i in 0 until v.childCount) collect(v.getChildAt(i))
+            }
+        }
+        collect(root)
+        if (webViews.isEmpty()) return
+        val js = """
+            (function(){
+                try{
+                    var targets = ["under review","captured images","photo error","capture it again"];
+                    var all = document.querySelectorAll('*');
+                    for(var i=0;i<all.length;i++){
+                        var el = all[i];
+                        if(el.children.length === 0){
+                            var t = (el.innerText || el.textContent || '').toLowerCase();
+                            for(var j=0;j<targets.length;j++){
+                                if(t.indexOf(targets[j]) !== -1){
+                                    el.style.display = 'none';
+                                    if(el.parentElement){ el.parentElement.style.display = 'none'; }
+                                }
+                            }
+                        }
+                    }
+                }catch(e){}
+            })();
+        """.trimIndent()
+        webViews.forEach { wv ->
+            try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {}
         }
     }
 
@@ -561,47 +678,34 @@ class JpwHook : IXposedHookLoadPackage {
             put("TechnicianDesignationType", "Technician")
         }
         val woBodySorted = toSortedJsonString(woPayload)
-        val woSig = generateSignature(woBodySorted)
         val woHeaders = mutableMapOf(
             "Referer" to "https://jpw.jio.com/v1/workOrderListV3",
-            "X-Signature" to woSig
+            "X-Signature" to generateSignature(woBodySorted)
         )
         if (jioCenterId.isNotEmpty()) woHeaders["X-JioCenterId"] = jioCenterId
         if (effectiveAuth.isNotEmpty()) woHeaders["Authorization"] = effectiveAuth
         extraCapturedHeaders.forEach { (k, v) -> if (!woHeaders.containsKey(k)) woHeaders[k] = v }
 
-        log("WO req -> url=$WO_URL | sig=${woSig.take(16)}... | headers=${woHeaders.keys} | cookies=${sessionCookies.keys}")
-        val woResult = try {
-            httpPostNoSig(WO_URL, woBodySorted, woHeaders)
-        } catch (t: Throwable) {
-            log("WO httpPostNoSig exception: ${t.javaClass.simpleName}: ${t.message}")
-            showToast(ctx, "WO request error: ${t.message}")
-            return
-        }
-        log("WO raw (${woResult.length} chars) -> ${woResult.take(600)}")
+        log("WO req headers -> $woHeaders | cookiesKeys=${sessionCookies.keys}")
+        val woResult = httpPostNoSig(WO_URL, woBodySorted, woHeaders)
+        log("WO raw -> result=$woResult")
 
-        val woJson = try {
-            JSONObject(woResult)
-        } catch (e: Exception) {
-            log("WO JSON parse failed: ${e.message} | raw=${woResult.take(300)}")
-            showToast(ctx, "WO fetch failed! Check logs / tap Refresh.")
+        val woJson = try { JSONObject(woResult) } catch (_: Exception) {
+            showToast(ctx, "WO fetch failed! Tap Refresh (↻) and try again.")
             return
         }
         if (!woJson.optBoolean("IsSuccessful", false)) {
-            val msg = woJson.optString("Message", woJson.optString("message", "unknown"))
-            log("WO API unsuccessful -> Message='$msg' | json=${woResult.take(400)}")
-            showToast(ctx, "WO fetch failed: $msg")
+            showToast(ctx, "WO fetch failed: ${woJson.optString("Message", "unknown")}")
             return
         }
         val orders = woJson.optJSONArray("lstWorkOrders") ?: JSONArray()
         val total = orders.length()
-        log("WO count = $total")
         showToast(ctx, "Step 3/4: REACHing $total WOs…")
 
         var success = 0
         var fail = 0
         for (i in 0 until total) {
-            val wo = orders.optJSONObject(i) ?: continue
+            val wo = orders.getJSONObject(i)
             val woId = wo.optString("WorkOrderID", "")
             if (woId.isEmpty()) continue
             val subType = wo.optString("WorkOrderSubType", "22")
@@ -626,18 +730,8 @@ class JpwHook : IXposedHookLoadPackage {
             try {
                 val bodyStr = toSortedJsonString(reachPayload)
                 reachHeaders["X-Signature"] = generateSignature(bodyStr)
-                val reachResp = httpPostNoSig(REACH_URL, bodyStr, reachHeaders)
-                val reachJson = JSONObject(reachResp)
-                if (reachJson.optBoolean("IsSuccessful", false)) {
-                    success++
-                } else {
-                    fail++
-                    log("REACH failed for woId=$woId -> ${reachResp.take(300)}")
-                }
-            } catch (e: Exception) {
-                fail++
-                log("REACH exception for woId=$woId -> ${e.message}")
-            }
+                if (JSONObject(httpPostNoSig(REACH_URL, bodyStr, reachHeaders)).optBoolean("IsSuccessful", false)) success++ else fail++
+            } catch (_: Exception) { fail++ }
         }
         showToast(ctx, "Done! REACHED: $success, Failed: $fail out of $total")
     }
@@ -658,21 +752,15 @@ class JpwHook : IXposedHookLoadPackage {
                 "X-Signature" to generateSignature(bodyStr)
             )
             val raw = httpPostNoSig(LOGIN_URL, bodyStr, loginHeaders)
-            log("doLogin raw -> ${raw.take(400)}")
+            log("doLogin raw -> $raw")
             val json = JSONObject(raw)
             if (json.optBoolean("IsSuccessful", false)) {
                 val sid = json.optString("sessionId", "")
                 if (sid.isNotEmpty()) sessionCookies["JPSSSessionID"] = sid
                 saveCookies(ctx)
                 true
-            } else {
-                log("doLogin unsuccessful -> ${json.optString("Message", "unknown")}")
-                false
-            }
-        } catch (e: Exception) {
-            log("doLogin exception -> ${e.javaClass.simpleName}: ${e.message}")
-            false
-        }
+            } else false
+        } catch (_: Exception) { false }
     }
 
     private fun saveCookies(ctx: Context?) {
