@@ -94,14 +94,18 @@ class JpwHook : IXposedHookLoadPackage {
     private fun isReviewOrPhotoErrorText(raw: String?): Boolean {
         val t = raw?.trim()?.lowercase().orEmpty()
         if (t.isEmpty()) return false
-        return t.contains("under review") ||
+        return t.contains("captured images under review") ||
+            t.contains("photo error! please capture it again") ||
+            t.contains("under review") ||
             t.contains("captured images") ||
             t.contains("photo error") ||
             t.contains("capture it again") ||
             t.contains("review photos") ||
             t.contains("wall mounted") ||
             t.contains("rejected") ||
+            t.contains("have been rejected") ||
             t.contains("upload again") ||
+            t.contains("please upload again") ||
             t.contains("idu photo") ||
             t.contains("poe photo") ||
             t.contains("rmdu photo") ||
@@ -245,6 +249,62 @@ class JpwHook : IXposedHookLoadPackage {
         }
     }
 
+    private fun hideReviewInSingleWebView(wv: WebView?) {
+        if (wv == null) return
+        val js = """
+            (function(){
+                try{
+                    var targets = [
+                        "captured images under review",
+                        "photo error! please capture it again",
+                        "under review",
+                        "captured images",
+                        "photo error",
+                        "capture it again",
+                        "review photos",
+                        "wall mounted",
+                        "rejected",
+                        "have been rejected",
+                        "upload again",
+                        "please upload again",
+                        "idu photo",
+                        "poe photo",
+                        "rmdu photo",
+                        "odu photo",
+                        "odu light",
+                        "serloop"
+                    ];
+                    var all = document.querySelectorAll('*');
+                    for(var i=0;i<all.length;i++){
+                        var el = all[i];
+                        var rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if(!rawText || rawText.length > 160) continue;
+                        var matched = false;
+                        for(var j=0;j<targets.length;j++){
+                            if(rawText.indexOf(targets[j]) !== -1){
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if(matched){
+                            el.style.setProperty('display', 'none', 'important');
+                            el.style.setProperty('visibility', 'hidden', 'important');
+                            var p = el.parentElement;
+                            if(p && p !== document.body && p !== document.documentElement){
+                                var pText = (p.innerText || p.textContent || '').toLowerCase();
+                                if(pText.indexOf('how punctual') === -1 && pText.indexOf('rate the technician') === -1){
+                                    p.style.setProperty('display', 'none', 'important');
+                                    p.style.setProperty('visibility', 'hidden', 'important');
+                                }
+                            }
+                        }
+                    }
+                }catch(e){}
+            })();
+        """.trimIndent()
+        try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {}
+    }
+
     private fun hideReviewInWebViews(root: View?) {
         if (root == null) return
         val webViews = mutableListOf<WebView>()
@@ -257,30 +317,7 @@ class JpwHook : IXposedHookLoadPackage {
             }
         }
         collect(root)
-        if (webViews.isEmpty()) return
-        val js = """
-            (function(){
-                try{
-                    var targets = ["under review","captured images","photo error","capture it again","review photos","wall mounted","rejected","upload again","idu photo","poe photo","rmdu photo","odu photo","odu light","serloop"];
-                    var all = document.querySelectorAll('*');
-                    for(var i=0;i<all.length;i++){
-                        var el = all[i];
-                        if(el.children.length === 0){
-                            var t = (el.innerText || el.textContent || '').toLowerCase();
-                            for(var j=0;j<targets.length;j++){
-                                if(t.indexOf(targets[j]) !== -1){
-                                    el.style.display = 'none';
-                                    if(el.parentElement){ el.parentElement.style.display = 'none'; }
-                                }
-                            }
-                        }
-                    }
-                }catch(e){}
-            })();
-        """.trimIndent()
-        webViews.forEach { wv ->
-            try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {}
-        }
+        webViews.forEach { wv -> hideReviewInSingleWebView(wv) }
     }
 
     private fun isFalseSimAuthStatus(resVal: String): Boolean {
@@ -999,12 +1036,24 @@ class JpwHook : IXposedHookLoadPackage {
                         log("WebView.loadUrl -> ${u.take(160)}")
                     }
                 }
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    val wv = p.thisObject as? WebView ?: return
+                    Handler(Looper.getMainLooper()).postDelayed({ hideReviewInSingleWebView(wv) }, 400)
+                    Handler(Looper.getMainLooper()).postDelayed({ hideReviewInSingleWebView(wv) }, 1200)
+                }
             })
             XposedBridge.hookAllMethods(WebView::class.java, "evaluateJavascript", object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
                     val js = p.args.firstOrNull() as? String ?: return
                     if (js.contains("workOrder", ignoreCase = true) || js.contains("center", ignoreCase = true) || js.contains("token", ignoreCase = true)) {
                         log("WebView.evalJS -> ${js.take(120)}")
+                    }
+                }
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    val js = p.args.firstOrNull() as? String ?: return
+                    if (!js.contains("captured images under review")) {
+                        val wv = p.thisObject as? WebView ?: return
+                        Handler(Looper.getMainLooper()).post { hideReviewInSingleWebView(wv) }
                     }
                 }
             })
