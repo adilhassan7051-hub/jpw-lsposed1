@@ -2,6 +2,7 @@ package com.jpwreach.lsposed
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -177,6 +178,27 @@ class JpwHook : IXposedHookLoadPackage {
             )
         } catch (t: Throwable) {
             log("REVIEW_BYPASS optBoolean err: ${t.message}")
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                Dialog::class.java,
+                "show",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val dlg = param.thisObject as? Dialog ?: return
+                        Handler(Looper.getMainLooper()).post {
+                            try {
+                                val decor = dlg.window?.decorView ?: return@post
+                                hideReviewInTree(decor)
+                                hideReviewInWebViews(decor)
+                            } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            log("REVIEW_BYPASS Dialog.show err: ${t.message}")
         }
 
         try {
