@@ -2,7 +2,6 @@ package com.jpwreach.lsposed
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -25,8 +24,6 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import android.widget.Toast
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -64,7 +61,6 @@ class JpwHook : IXposedHookLoadPackage {
     private val extraCapturedHeaders = ConcurrentHashMap<String, String>()
     private val sessionCookies = ConcurrentHashMap<String, String>()
     private val registeredReceivers = ConcurrentHashMap.newKeySet<String>()
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val REACH_URL = "https://jpw.jio.com/lco/api/workorder-maintenance/WorkOrder/UpdateWorkOrder"
     private val WO_URL = "https://jpw.jio.com/lco/api/workorder-inquiry/WorkOrder/GetWorkOrderList"
@@ -89,236 +85,6 @@ class JpwHook : IXposedHookLoadPackage {
         bypassSimVerification(cl)
         bypassSignatureAndIntegrity(cl)
         hookHttpCookieCapture(cl)
-        bypassCapturedImagesReview(cl)
-    }
-
-    private fun isReviewOrPhotoErrorText(raw: String?): Boolean {
-        val t = raw?.trim()?.lowercase().orEmpty()
-        if (t.isEmpty()) return false
-        return t.contains("captured images under review") ||
-            t.contains("photo error! please capture it again") ||
-            t.contains("under review") ||
-            t.contains("captured images") ||
-            t.contains("photo error") ||
-            t.contains("capture it again") ||
-            t.contains("review photos") ||
-            t.contains("wall mounted") ||
-            t.contains("rejected") ||
-            t.contains("have been rejected") ||
-            t.contains("upload again") ||
-            t.contains("please upload again") ||
-            t.contains("idu photo") ||
-            t.contains("poe photo") ||
-            t.contains("rmdu photo") ||
-            t.contains("odu photo") ||
-            t.contains("odu light") ||
-            t.contains("serloop")
-    }
-
-    private fun bypassCapturedImagesReview(cl: ClassLoader) {
-        try {
-            XposedHelpers.findAndHookMethod(
-                TextView::class.java,
-                "setText",
-                CharSequence::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val orig = param.args.getOrNull(0)?.toString()
-                        if (isReviewOrPhotoErrorText(orig)) {
-                            log("REVIEW_BYPASS(1-arg) hiding text: $orig")
-                            param.args[0] = ""
-                            (param.thisObject as? View)?.visibility = View.GONE
-                        }
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS setText(1-arg) err: ${t.message}")
-        }
-
-        try {
-            XposedHelpers.findAndHookMethod(
-                TextView::class.java,
-                "setText",
-                CharSequence::class.java,
-                TextView.BufferType::class.java,
-                Boolean::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val orig = param.args.getOrNull(0)?.toString()
-                        if (isReviewOrPhotoErrorText(orig)) {
-                            log("REVIEW_BYPASS(4-arg) hiding text: $orig")
-                            param.args[0] = ""
-                            (param.thisObject as? View)?.visibility = View.GONE
-                        }
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS setText(4-arg) err: ${t.message}")
-        }
-
-        try {
-            XposedHelpers.findAndHookMethod(
-                JSONObject::class.java,
-                "optBoolean",
-                String::class.java,
-                Boolean::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val key = (param.args.getOrNull(0) as? String)?.lowercase() ?: return
-                        if (
-                            key.contains("underreview") ||
-                            key.contains("under_review") ||
-                            key.contains("inreview") ||
-                            key.contains("photoerror") ||
-                            key.contains("photo_error")
-                        ) {
-                            log("REVIEW_BYPASS forced $key -> false")
-                            param.result = false
-                        }
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS optBoolean err: ${t.message}")
-        }
-
-        try {
-            XposedHelpers.findAndHookMethod(
-                Dialog::class.java,
-                "show",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val dlg = param.thisObject as? Dialog ?: return
-                        mainHandler.post {
-                            try {
-                                val decor = dlg.window?.decorView ?: return@post
-                                hideReviewInTree(decor)
-                                hideReviewInWebViews(decor)
-                            } catch (_: Throwable) {}
-                        }
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS Dialog.show err: ${t.message}")
-        }
-
-        try {
-            XposedHelpers.findAndHookMethod(
-                Activity::class.java,
-                "onResume",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val act = param.thisObject as? Activity ?: return
-                        val decor = act.window?.decorView ?: return
-                        decor.viewTreeObserver?.addOnGlobalLayoutListener {
-                            hideReviewInTree(decor)
-                            hideReviewInWebViews(decor)
-                        }
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS layout listener err: ${t.message}")
-        }
-    }
-
-    private fun hideReviewInTree(view: View?) {
-        if (view == null) return
-        if (view is TextView) {
-            val txt = view.text?.toString()
-            if (isReviewOrPhotoErrorText(txt)) {
-                log("REVIEW_BYPASS tree hiding TextView: $txt")
-                view.text = ""
-                view.visibility = View.GONE
-                (view.parent as? ViewGroup)?.let { parent ->
-                    for (i in 0 until parent.childCount) {
-                        val child = parent.getChildAt(i)
-                        if (child is ProgressBar) {
-                            child.visibility = View.GONE
-                        }
-                    }
-                }
-            }
-        } else if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                hideReviewInTree(view.getChildAt(i))
-            }
-        }
-    }
-
-    private fun hideReviewInSingleWebView(wv: WebView?) {
-        if (wv == null) return
-        val js = """
-            (function(){
-                try{
-                    var targets = [
-                        "captured images under review",
-                        "photo error! please capture it again",
-                        "under review",
-                        "captured images",
-                        "photo error",
-                        "capture it again",
-                        "review photos",
-                        "wall mounted",
-                        "rejected",
-                        "have been rejected",
-                        "upload again",
-                        "please upload again",
-                        "idu photo",
-                        "poe photo",
-                        "rmdu photo",
-                        "odu photo",
-                        "odu light",
-                        "serloop"
-                    ];
-                    var all = document.querySelectorAll('*');
-                    for(var i=0;i<all.length;i++){
-                        var el = all[i];
-                        var rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
-                        if(!rawText || rawText.length > 160) continue;
-                        var matched = false;
-                        for(var j=0;j<targets.length;j++){
-                            if(rawText.indexOf(targets[j]) !== -1){
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if(matched){
-                            el.style.setProperty('display', 'none', 'important');
-                            el.style.setProperty('visibility', 'hidden', 'important');
-                            var p = el.parentElement;
-                            if(p && p !== document.body && p !== document.documentElement){
-                                var pText = (p.innerText || p.textContent || '').toLowerCase();
-                                if(pText.indexOf('how punctual') === -1 && pText.indexOf('rate the technician') === -1){
-                                    p.style.setProperty('display', 'none', 'important');
-                                    p.style.setProperty('visibility', 'hidden', 'important');
-                                }
-                            }
-                        }
-                    }
-                }catch(e){}
-            })();
-        """.trimIndent()
-        try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {}
-    }
-
-    private fun hideReviewInWebViews(root: View?) {
-        if (root == null) return
-        val webViews = mutableListOf<WebView>()
-        fun collect(v: View?) {
-            if (v == null) return
-            if (v is WebView) {
-                webViews.add(v)
-            } else if (v is ViewGroup) {
-                for (i in 0 until v.childCount) collect(v.getChildAt(i))
-            }
-        }
-        collect(root)
-        webViews.forEach { wv -> hideReviewInSingleWebView(wv) }
     }
 
     private fun isFalseSimAuthStatus(resVal: String): Boolean {
@@ -510,7 +276,7 @@ class JpwHook : IXposedHookLoadPackage {
 
         val targetAct = act ?: lastActivityRef
         if (targetAct != null) {
-            mainHandler.post {
+            Handler(Looper.getMainLooper()).post {
                 try {
                     val webViews = mutableListOf<WebView>()
                     fun findWebViews(v: View?) {
@@ -683,7 +449,7 @@ class JpwHook : IXposedHookLoadPackage {
                                 .apply()
 
                             Thread {
-                                mainHandler.post { extractWebViewCookies() }
+                                Handler(Looper.getMainLooper()).post { extractWebViewCookies() }
                                 Thread.sleep(200)
                                 loadCookies(ctx)
 
@@ -713,7 +479,7 @@ class JpwHook : IXposedHookLoadPackage {
 
     private fun autoReach(ctx: Context) {
         showToast(ctx, "Step 1/4: Getting session…")
-        mainHandler.post { extractWebViewCookies() }
+        Handler(Looper.getMainLooper()).post { extractWebViewCookies() }
         Thread.sleep(300)
         loadCookies(ctx)
 
@@ -923,7 +689,7 @@ class JpwHook : IXposedHookLoadPackage {
     }
 
     private fun showToast(ctx: Context, msg: String) {
-        try { mainHandler.post { Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show() } } catch (_: Throwable) {}
+        try { Handler(Looper.getMainLooper()).post { Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show() } } catch (_: Throwable) {}
     }
 
     private fun dp(ctx: Context, v: Int): Int = (v * ctx.resources.displayMetrics.density).toInt()
@@ -1037,23 +803,12 @@ class JpwHook : IXposedHookLoadPackage {
                         log("WebView.loadUrl -> ${u.take(160)}")
                     }
                 }
-                override fun afterHookedMethod(p: MethodHookParam) {
-                    val wv = p.thisObject as? WebView ?: return
-                    mainHandler.postDelayed({ hideReviewInSingleWebView(wv) }, 400)
-                }
             })
             XposedBridge.hookAllMethods(WebView::class.java, "evaluateJavascript", object : XC_MethodHook() {
                 override fun beforeHookedMethod(p: MethodHookParam) {
                     val js = p.args.firstOrNull() as? String ?: return
                     if (js.contains("workOrder", ignoreCase = true) || js.contains("center", ignoreCase = true) || js.contains("token", ignoreCase = true)) {
                         log("WebView.evalJS -> ${js.take(120)}")
-                    }
-                }
-                override fun afterHookedMethod(p: MethodHookParam) {
-                    val js = p.args.firstOrNull() as? String ?: return
-                    if (!js.contains("captured images under review")) {
-                        val wv = p.thisObject as? WebView ?: return
-                        mainHandler.post { hideReviewInSingleWebView(wv) }
                     }
                 }
             })
