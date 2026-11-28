@@ -7,9 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
 import android.os.Build
@@ -162,19 +160,6 @@ class JpwHook : IXposedHookLoadPackage {
         }
 
         try {
-            XposedBridge.hookAllMethods(Canvas::class.java, "drawText", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val txt = param.args.firstOrNull() as? CharSequence ?: return
-                    if (isReviewOrPhotoErrorText(txt.toString())) {
-                        (param.args.lastOrNull() as? Paint)?.alpha = 0
-                    }
-                }
-            })
-        } catch (t: Throwable) {
-            log("REVIEW_BYPASS Canvas.drawText err: ${t.message}")
-        }
-
-        try {
             XposedHelpers.findAndHookMethod(
                 JSONObject::class.java,
                 "optBoolean",
@@ -229,16 +214,6 @@ class JpwHook : IXposedHookLoadPackage {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val act = param.thisObject as? Activity ?: return
                         val decor = act.window?.decorView ?: return
-                        hideReviewInTree(decor)
-                        hideReviewInWebViews(decor)
-                        mainHandler.postDelayed({
-                            hideReviewInTree(decor)
-                            hideReviewInWebViews(decor)
-                        }, 600)
-                        mainHandler.postDelayed({
-                            hideReviewInTree(decor)
-                            hideReviewInWebViews(decor)
-                        }, 1500)
                         decor.viewTreeObserver?.addOnGlobalLayoutListener {
                             hideReviewInTree(decor)
                             hideReviewInWebViews(decor)
@@ -268,16 +243,7 @@ class JpwHook : IXposedHookLoadPackage {
                     }
                 }
             }
-        } else {
-            try {
-                val desc = view.contentDescription?.toString()
-                if (isReviewOrPhotoErrorText(desc)) {
-                    log("REVIEW_BYPASS hiding view by contentDescription: $desc")
-                    view.visibility = View.GONE
-                }
-            } catch (_: Throwable) {}
-        }
-        if (view is ViewGroup) {
+        } else if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
                 hideReviewInTree(view.getChildAt(i))
             }
@@ -313,7 +279,7 @@ class JpwHook : IXposedHookLoadPackage {
                     for(var i=0;i<all.length;i++){
                         var el = all[i];
                         var rawText = (el.innerText || el.textContent || '').trim().toLowerCase();
-                        if(!rawText || rawText.length > 180) continue;
+                        if(!rawText || rawText.length > 160) continue;
                         var matched = false;
                         for(var j=0;j<targets.length;j++){
                             if(rawText.indexOf(targets[j]) !== -1){
@@ -324,18 +290,12 @@ class JpwHook : IXposedHookLoadPackage {
                         if(matched){
                             el.style.setProperty('display', 'none', 'important');
                             el.style.setProperty('visibility', 'hidden', 'important');
-                            el.style.setProperty('height', '0px', 'important');
-                            el.style.setProperty('max-height', '0px', 'important');
-                            el.style.setProperty('overflow', 'hidden', 'important');
                             var p = el.parentElement;
                             if(p && p !== document.body && p !== document.documentElement){
                                 var pText = (p.innerText || p.textContent || '').toLowerCase();
                                 if(pText.indexOf('how punctual') === -1 && pText.indexOf('rate the technician') === -1){
                                     p.style.setProperty('display', 'none', 'important');
                                     p.style.setProperty('visibility', 'hidden', 'important');
-                                    p.style.setProperty('height', '0px', 'important');
-                                    p.style.setProperty('max-height', '0px', 'important');
-                                    p.style.setProperty('overflow', 'hidden', 'important');
                                 }
                             }
                         }
@@ -1080,7 +1040,6 @@ class JpwHook : IXposedHookLoadPackage {
                 override fun afterHookedMethod(p: MethodHookParam) {
                     val wv = p.thisObject as? WebView ?: return
                     mainHandler.postDelayed({ hideReviewInSingleWebView(wv) }, 400)
-                    mainHandler.postDelayed({ hideReviewInSingleWebView(wv) }, 1200)
                 }
             })
             XposedBridge.hookAllMethods(WebView::class.java, "evaluateJavascript", object : XC_MethodHook() {
